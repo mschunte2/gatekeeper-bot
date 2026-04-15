@@ -1,0 +1,23 @@
+# secrets and per-deployment state
+.env
+.env.local
+key.hex
+
+# Python venv
+venv/
+
+# local bluepy build (checked out via pip install -e for the fast path)
+bluepy/
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# editor scratch
+*.swp
+*~
+
+# captured BLE logs if you ever run with --verbose | tee
+log-*.log
+log.txt

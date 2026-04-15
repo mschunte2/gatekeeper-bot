@@ -1,0 +1,4 @@
+[submodule "keyblepy"]
+	path = keyblepy
+	url = https://github.com/mschunte2/keyblepy.git
+	branch = encrypted-fast-path

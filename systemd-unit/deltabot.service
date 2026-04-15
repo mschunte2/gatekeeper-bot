@@ -1,0 +1,13 @@
+[Unit]
+Description=Deltachat-Bot-Gatekeeper Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+#ExecStart=/usr/bin/screen -S delta-door-bot -d -m /home/pi/gatekeeper-bot/start-gatekeeper-bot.sh
+ExecStart=/home/pi/gatekeeper-bot/start-gatekeeper-bot.sh
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
