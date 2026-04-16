@@ -37,6 +37,12 @@ const deviceNameEl = document.getElementById("deviceName");
 let _pendingTimer = null;
 let _pendingLabel = ""; // shown once the bot acks the request
 let _currentState = "closed"; // last confirmed state (for toggle decisions)
+// On app load the bot's status-update queue may already contain stale
+// ack/response payloads from previous sessions. We want the visual to
+// start at red regardless and only follow updates that belong to the
+// CURRENT auto-open / tap, so we discard ack/response updates until
+// the auto-open has been kicked off.
+let _ready = false;
 
 function setState(state) {
   if (_pendingTimer !== null) {
@@ -103,9 +109,14 @@ deviceNameEl.textContent = "You are: " + window.webxdc.selfName;
 
 window.webxdc.setUpdateListener((update) => {
   const payload = update.payload || {};
+  // Door name updates are always safe to apply.
   if (payload.config && typeof payload.config.door_name === "string") {
     setDoorName(payload.config.door_name);
   }
+  // Skip state-changing updates while the queue is being drained --
+  // they belong to a previous session and must not overwrite the
+  // initial red 'starting' frame.
+  if (!_ready) return;
   // Bot acknowledged that it received the command -- now we can switch
   // to the orange "in progress" visual.
   if (payload.ack && _pendingTimer !== null) {
@@ -133,4 +144,7 @@ slider.addEventListener("click", () => {
 // One-tap UX on app open: linger on the red "starting" frame so the
 // transition reads, then auto-fire the actual open command. After this
 // initial cycle the user can keep tapping the slider to toggle.
-setTimeout(() => send("open", "Opening…"), STARTING_FRAME_MS);
+setTimeout(() => {
+  _ready = true; // start honouring incoming ack/response updates
+  send("open", "Opening…");
+}, STARTING_FRAME_MS);
