@@ -1,19 +1,30 @@
 const APP_ID = "quick-unlock";
 const DEFAULT_DOOR_NAME = "Door";
 const PENDING_TIMEOUT_MS = 60000;
+const STARTING_FRAME_MS = 1000; // how long to linger on the red "starting" frame
 
+// User-facing colour semantics (NOT lock-state semantics):
+//   green = open       (target / success)
+//   red   = closed     (starting / failure)
+//   yellow= opening    (transitional / pending)
 const STATE_IMG = {
-  locked: "./locked.png",
-  unlocked: "./unlocked.png",
-  unknown: "./locked.png",
-  error: "./unlocked.png",
+  open: "./open.png",
+  closed: "./closed.png",
+  opening: "./opening.png",
 };
 const STATE_LABEL = {
-  locked: "Locked",
-  unlocked: "Unlocked",
-  unknown: "Unknown",
-  error: "Error",
-  pending: "Working…",
+  open: "Open",
+  closed: "Closed",
+  opening: "Opening…",
+};
+
+// Bot replies arrive as locked|unlocked|unknown|error -- map them into
+// our colour semantics.
+const RESP_TO_STATE = {
+  unlocked: "open",
+  locked: "closed",
+  error: "closed",
+  unknown: "closed",
 };
 
 const slider = document.getElementById("slider");
@@ -23,7 +34,6 @@ const statusText = document.getElementById("statusText");
 const doorNameEl = document.getElementById("doorName");
 const deviceNameEl = document.getElementById("deviceName");
 
-let _gotState = false;
 let _pendingTimer = null;
 
 function setState(state) {
@@ -31,22 +41,26 @@ function setState(state) {
     clearTimeout(_pendingTimer);
     _pendingTimer = null;
   }
-  if (!STATE_IMG[state]) state = "unknown";
+  if (!STATE_IMG[state]) state = "closed";
   sliderImg.src = STATE_IMG[state];
   slider.className = "slider " + state;
   statusEl.className = "status " + state;
   statusText.textContent = STATE_LABEL[state];
 }
 
-function setPending(verb) {
-  slider.classList.add("pending");
-  statusEl.className = "status pending";
-  statusText.textContent = verb || "Working…";
+function setPending(label) {
+  // Show the yellow transitional and arm a timeout fallback so the UI
+  // can't get stuck if the bot never replies.
+  sliderImg.src = STATE_IMG.opening;
+  slider.className = "slider opening";
+  statusEl.className = "status opening";
+  statusText.textContent = label || STATE_LABEL.opening;
   if (_pendingTimer !== null) clearTimeout(_pendingTimer);
   _pendingTimer = setTimeout(() => {
     _pendingTimer = null;
-    slider.classList.remove("pending");
-    statusEl.className = "status unknown";
+    sliderImg.src = STATE_IMG.closed;
+    slider.className = "slider closed";
+    statusEl.className = "status closed";
     statusText.textContent = "Timeout (no response)";
   }, PENDING_TIMEOUT_MS);
 }
@@ -55,8 +69,8 @@ function setDoorName(name) {
   doorNameEl.textContent = (name && String(name).trim()) || DEFAULT_DOOR_NAME;
 }
 
-function send(command, verb) {
-  setPending(verb);
+function send(command, label) {
+  setPending(label);
   window.webxdc.sendUpdate(
     {
       payload: {
@@ -71,11 +85,11 @@ function send(command, verb) {
   );
 }
 
-// Apply defaults BEFORE registering the listener -- some clients deliver
-// queued-update callbacks synchronously, which would otherwise overwrite
-// the just-set state.
+// Apply defaults BEFORE registering the listener. Some clients deliver
+// queued-update callbacks synchronously; setting defaults first means
+// any queued updates apply on top of them, not the other way round.
 setDoorName(DEFAULT_DOOR_NAME);
-setState("unknown");
+setState("closed"); // red "starting point"
 deviceNameEl.textContent = "You are: " + window.webxdc.selfName;
 
 window.webxdc.setUpdateListener((update) => {
@@ -86,15 +100,15 @@ window.webxdc.setUpdateListener((update) => {
   const resp = payload.response;
   if (resp) {
     const text = (resp.text || "").trim().toLowerCase();
-    if (STATE_IMG[text]) {
-      setState(text);
-      _gotState = true;
-    }
+    const mapped = RESP_TO_STATE[text];
+    if (mapped) setState(mapped);
   }
 });
 
-// Tap the slider to refresh the lock state on demand.
-slider.addEventListener("click", () => send("status", "Refreshing…"));
+// Tap the slider to refresh the current state on demand.
+slider.addEventListener("click", () => send("status", "Checking…"));
 
-// One-tap UX: opening the app immediately requests the door to open.
-send("open", "Opening…");
+// One-tap UX: linger on the red "starting" frame for a beat so the
+// transition reads, then flip to the yellow "opening" frame and fire
+// the actual open command. The bot's response will switch us to green.
+setTimeout(() => send("open", "Opening…"), STARTING_FRAME_MS);
