@@ -54,14 +54,23 @@ h1 {
   fill: #fff;
 }
 
+/* Lock button (left of roof): red so its action is unmistakable. */
 .lock-pos {
   top: 65px;
   left: 10px;
+  background: #dc2626;
+  border-color: #991b1b;
 }
+.lock-pos:hover { background: #b91c1c; }
+
+/* Unlock button (right of roof): green for the same reason. */
 .unlock-pos {
   top: 65px;
   right: 10px;
+  background: #22c55e;
+  border-color: #15803d;
 }
+.unlock-pos:hover { background: #16a34a; }
 .door-pos {
   bottom: 10px;
   left: 50%;
