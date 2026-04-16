@@ -72,12 +72,18 @@ function setDoorName(name) {
   doorNameEl.textContent = (name && String(name).trim()) || DEFAULT_DOOR_NAME;
 }
 
+const APP_ID = "gatekeeper";
+
 function send(command) {
   setPending(command);
   window.webxdc.sendUpdate(
     {
       payload: {
-        request: { name: window.webxdc.selfName, text: command },
+        request: {
+          name: window.webxdc.selfName,
+          text: command,
+          app: APP_ID,
+        },
       },
     },
     "",

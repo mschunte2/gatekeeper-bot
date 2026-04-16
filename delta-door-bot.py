@@ -38,14 +38,19 @@ DEFAULT_HELP_MESSAGE = (
     " /lock or /zu - locks gate\n"
     " /unlock or /auf - unlocks gate\n"
     " /status - print current status\n"
-    " /app - (re)send the webxdc control app to this chat\n"
+    " /apps - (re)send all webxdc control apps to this chat\n"
     " /id - get this chat's id\n"
     " - Any other input shows this message.\n"
     " NOTE: lock operations can take up to 90 seconds."
 )
 
 HERE = Path(__file__).resolve().parent
-XDC_PATH = str(HERE / "app.xdc")
+# (app_id, .xdc path) pairs. Each app is sent to a chat by /apps and
+# tracked independently in _msgid_map[chatid].
+XDC_PATHS = [
+    ("gatekeeper",   str(HERE / "apps" / "gatekeeper.xdc")),    # full lock-control app
+    ("quick-unlock", str(HERE / "apps" / "quick-unlock.xdc")),  # one-tap-unlock app
+]
 SEND_COMMAND_SH = str(HERE / "send-command.sh")
 
 # Whitelist of accepted lock-operation tokens. Used by BOTH text and app
@@ -76,28 +81,41 @@ STATE_DIR = Path(user_config_dir("gatekeeper"))
 APP_MSGIDS_PATH = STATE_DIR / "app_msgids.json"
 
 
-def _load_msgids() -> dict[int, int]:
+def _load_msgids() -> dict[int, list[int]]:
+    """Load chat_id -> [msgid, ...] from disk.
+
+    Tolerates the legacy single-int-per-chat layout.
+    """
     try:
         raw = json.loads(APP_MSGIDS_PATH.read_text())
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
-    out: dict[int, int] = {}
+    out: dict[int, list[int]] = {}
     for k, v in raw.items():
         try:
-            out[int(k)] = int(v)
+            chat = int(k)
         except (TypeError, ValueError):
             continue
+        if isinstance(v, list):
+            ids = [int(m) for m in v if isinstance(m, (int, str)) and str(m).strip()]
+        else:
+            try:
+                ids = [int(v)]
+            except (TypeError, ValueError):
+                ids = []
+        if ids:
+            out[chat] = ids
     return out
 
 
-def _save_msgids(data: dict[int, int]) -> None:
+def _save_msgids(data: dict[int, list[int]]) -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     tmp = APP_MSGIDS_PATH.with_suffix(".tmp")
-    tmp.write_text(json.dumps({str(k): int(v) for k, v in data.items()}))
+    tmp.write_text(json.dumps({str(k): [int(m) for m in v] for k, v in data.items()}))
     os.replace(tmp, APP_MSGIDS_PATH)
 
 
-_msgid_map: dict[int, int] = _load_msgids()
+_msgid_map: dict[int, list[int]] = _load_msgids()
 _last_known_state: str = "unknown"
 
 # ----------------------------------------------------------- output parser
@@ -131,14 +149,15 @@ def _push_state(bot, accid: int, state: str) -> int:
     update = {"payload": {"response": {"name": "bot", "text": state}}}
     body = json.dumps(update)
     pushed = 0
-    for chatid, msgid in list(_msgid_map.items()):
-        try:
-            bot.rpc.send_webxdc_status_update(accid, msgid, body, "")
-            pushed += 1
-        except Exception as ex:
-            bot.logger.warning(
-                f"push state to chat {chatid} msgid {msgid} failed: {ex}"
-            )
+    for chatid, msgids in list(_msgid_map.items()):
+        for msgid in msgids:
+            try:
+                bot.rpc.send_webxdc_status_update(accid, msgid, body, "")
+                pushed += 1
+            except Exception as ex:
+                bot.logger.warning(
+                    f"push state to chat {chatid} msgid {msgid} failed: {ex}"
+                )
     return pushed
 
 
@@ -150,20 +169,29 @@ def _push_door_name(bot, accid: int, msgid: int) -> None:
         bot.logger.warning(f"push door_name to msgid {msgid} failed: {ex}")
 
 
-def _send_app(bot, accid: int, chatid: int) -> int | None:
-    """Send the .xdc to `chatid` and remember the new msgid."""
-    try:
-        msgid = bot.rpc.send_msg(accid, chatid, MsgData(file=XDC_PATH))
-    except Exception as ex:
-        bot.logger.error(f"send app to chat {chatid} failed: {ex}")
-        return None
-    msgid = int(msgid)
-    _msgid_map[chatid] = msgid
-    _save_msgids(_msgid_map)
-    bot.logger.info(f"app sent to chat {chatid} msgid={msgid}")
-    _push_door_name(bot, accid, msgid)
-    _push_state(bot, accid, _last_known_state)
-    return msgid
+def _send_apps(bot, accid: int, chatid: int) -> list[int]:
+    """Send every available .xdc to `chatid` and remember the new msgids.
+
+    Replaces any previously-tracked msgids for this chat -- /apps means
+    "fresh set". Old in-chat app messages still work but are no longer
+    refreshed by silent state pushes.
+    """
+    sent: list[int] = []
+    for app_id, path in XDC_PATHS:
+        try:
+            msgid = int(bot.rpc.send_msg(accid, chatid, MsgData(file=path)))
+        except Exception as ex:
+            bot.logger.error(f"send app {app_id!r} to chat {chatid} failed: {ex}")
+            continue
+        sent.append(msgid)
+        bot.logger.info(f"app {app_id!r} sent to chat {chatid} msgid={msgid}")
+        _push_door_name(bot, accid, msgid)
+    if sent:
+        _msgid_map[chatid] = sent
+        _save_msgids(_msgid_map)
+        # Seed state for every freshly-sent instance.
+        _push_state(bot, accid, _last_known_state)
+    return sent
 
 
 # ----------------------------------------------------- shared command path
@@ -293,23 +321,27 @@ def on_webxdc_update(bot, accid, event):
 
     cmd = (req.get("text") or "").strip().lower()
     name = req.get("name") or "?"
+    app_id = (req.get("app") or "?").strip() or "?"  # debug only -- not user-visible
 
     msg = bot.rpc.get_message(accid, msgid)
     chatid = msg.chat_id
 
-    bot.logger.info(f"app cmd from chat {chatid} ({name}): {cmd!r}")
+    bot.logger.info(
+        f"app cmd from chat {chatid} ({name} via {app_id}): {cmd!r}"
+    )
 
     if not _is_allowed(chatid):
         bot.logger.warning(f"app cmd from non-allowed chat {chatid} rejected")
         return
 
     # Opportunistic learning: if this msgid isn't in our persisted map
-    # (e.g. app was sent by an earlier bot version, or .json got out of
-    # sync), record it now and seed it with current door_name + state so
-    # the icon updates immediately rather than waiting for the next
-    # state-changing command.
-    if _msgid_map.get(chatid) != msgid:
-        _msgid_map[chatid] = msgid
+    # (e.g. app was sent by an earlier bot version, /apps was never used,
+    # or .json got out of sync), record it now and seed it with current
+    # door_name + state so the icon updates immediately rather than
+    # waiting for the next state-changing command.
+    existing = _msgid_map.get(chatid, [])
+    if msgid not in existing:
+        _msgid_map[chatid] = existing + [msgid]
         _save_msgids(_msgid_map)
         bot.logger.info(f"learned app msgid={msgid} for chat {chatid}")
         _push_door_name(bot, accid, msgid)
@@ -379,11 +411,11 @@ def on_new_message(bot, accid, event):
         )
         return
 
-    if text == "/app":
+    if text == "/apps":
         if not _is_allowed(chatid):
             bot.rpc.send_msg(accid, chatid, MsgData(text="permission denied"))
             return
-        _send_app(bot, accid, chatid)
+        _send_apps(bot, accid, chatid)
         return
 
     help_text = os.environ.get("HELP_MESSAGE", DEFAULT_HELP_MESSAGE)
@@ -396,9 +428,11 @@ def on_new_message(bot, accid, event):
 def _on_start(bot, _args):
     global _last_known_state
 
+    total_instances = sum(len(v) for v in _msgid_map.values())
     bot.logger.info(
         f"gatekeeper-bot starting; allowed_chats={sorted(ALLOWED_CHATS)} "
-        f"door_name={DOOR_NAME!r} known_apps={len(_msgid_map)}"
+        f"door_name={DOOR_NAME!r} known_chats={len(_msgid_map)} "
+        f"app_instances={total_instances}"
     )
 
     # Seed the icon by querying the lock once (per design point #3).
@@ -423,8 +457,9 @@ def _on_start(bot, _args):
     if not accounts:
         return
     accid = accounts[0]
-    for _chatid, msgid in list(_msgid_map.items()):
-        _push_door_name(bot, accid, msgid)
+    for _chatid, msgids in list(_msgid_map.items()):
+        for msgid in msgids:
+            _push_door_name(bot, accid, msgid)
     _push_state(bot, accid, _last_known_state)
 
 

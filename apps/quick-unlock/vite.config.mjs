@@ -3,7 +3,7 @@ import { defineConfig } from "vite";
 
 export default defineConfig({
   plugins: [
-    buildXDC({ outDir: "../", outFileName: "app.xdc" }),
+    buildXDC({ outDir: "../", outFileName: "quick-unlock.xdc" }),
     eruda(),
     mockWebxdc("./node_modules/webxdc-vite-plugins/src/webxdc.js"),
   ],
