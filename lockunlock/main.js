@@ -55,6 +55,8 @@ document
   .addEventListener("click", () => send("open"));
 doorBtn.addEventListener("click", () => send("status"));
 
+let _gotState = false;
+
 window.webxdc.setUpdateListener((update) => {
   const payload = update.payload || {};
   if (payload.config && typeof payload.config.door_name === "string") {
@@ -63,10 +65,21 @@ window.webxdc.setUpdateListener((update) => {
   const resp = payload.response;
   if (resp) {
     const text = (resp.text || "").trim().toLowerCase();
-    if (DOOR_ICONS[text]) setDoorState(text);
+    if (DOOR_ICONS[text]) {
+      setDoorState(text);
+      _gotState = true;
+    }
   }
 });
 
 setDoorState("unknown");
 setDoorName(DEFAULT_DOOR_NAME);
 deviceNameEl.textContent = "You are: " + window.webxdc.selfName;
+
+// On open, queued updates arrive synchronously through setUpdateListener.
+// If none of them set a state (e.g. the bot didn't know about this app
+// instance yet), ask for one. The bot recognises 'status' as read-only
+// and won't post an audit line for it.
+setTimeout(() => {
+  if (!_gotState) send("status");
+}, 1000);

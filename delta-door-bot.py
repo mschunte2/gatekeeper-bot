@@ -218,17 +218,20 @@ def run_lock_command(
         )
         proc = _run()
 
-    # Echo final attempt's output (preserves text-path UX; visible audit
-    # for app path).
-    for line in proc.stdout.splitlines():
-        if line.strip():
-            bot.rpc.send_msg(accid, chatid, MsgData(text=line))
-    for line in proc.stderr.splitlines():
-        if line.strip():
-            bot.rpc.send_msg(accid, chatid, MsgData(text=line))
+    # Text path: echo raw subprocess output (existing behaviour).
+    # App path: stay silent here -- the audit line below speaks for the
+    # app, and the raw 'device opened' line would just duplicate it.
+    if actor_name is None:
+        for line in proc.stdout.splitlines():
+            if line.strip():
+                bot.rpc.send_msg(accid, chatid, MsgData(text=line))
+        for line in proc.stderr.splitlines():
+            if line.strip():
+                bot.rpc.send_msg(accid, chatid, MsgData(text=line))
 
-    # Audit line for app-triggered commands.
-    if actor_name is not None:
+    # Audit line for app-triggered commands. Skip 'status' because it is
+    # read-only and noisy (the app auto-requests it on open).
+    if actor_name is not None and command != "status":
         emoji, verb = _AUDIT_VERB.get(command, ("🔧", command))
         if proc.returncode == 0:
             audit = f"{emoji} {DOOR_NAME} {verb} by {actor_name}"
@@ -299,6 +302,26 @@ def on_webxdc_update(bot, accid, event):
     if not _is_allowed(chatid):
         bot.logger.warning(f"app cmd from non-allowed chat {chatid} rejected")
         return
+
+    # Opportunistic learning: if this msgid isn't in our persisted map
+    # (e.g. app was sent by an earlier bot version, or .json got out of
+    # sync), record it now and seed it with current door_name + state so
+    # the icon updates immediately rather than waiting for the next
+    # state-changing command.
+    if _msgid_map.get(chatid) != msgid:
+        _msgid_map[chatid] = msgid
+        _save_msgids(_msgid_map)
+        bot.logger.info(f"learned app msgid={msgid} for chat {chatid}")
+        _push_door_name(bot, accid, msgid)
+        try:
+            bot.rpc.send_webxdc_status_update(
+                accid, msgid,
+                json.dumps({"payload": {"response": {"name": "bot",
+                                                     "text": _last_known_state}}}),
+                "",
+            )
+        except Exception as ex:
+            bot.logger.warning(f"seed state push to msgid {msgid} failed: {ex}")
 
     if cmd not in VALID_COMMANDS:
         bot.logger.warning(f"refusing webxdc command {cmd!r}")
