@@ -92,6 +92,13 @@ doorBtn.addEventListener("click", () => send("status"));
 
 let _gotState = false;
 
+// Apply defaults BEFORE registering the listener -- if the client fires
+// queued-update callbacks synchronously (some do), the defaults would
+// otherwise overwrite anything the listener just set.
+setDoorState("unknown");
+setDoorName(DEFAULT_DOOR_NAME);
+deviceNameEl.textContent = "You are: " + window.webxdc.selfName;
+
 window.webxdc.setUpdateListener((update) => {
   const payload = update.payload || {};
   if (payload.config && typeof payload.config.door_name === "string") {
@@ -106,10 +113,6 @@ window.webxdc.setUpdateListener((update) => {
     }
   }
 });
-
-setDoorState("unknown");
-setDoorName(DEFAULT_DOOR_NAME);
-deviceNameEl.textContent = "You are: " + window.webxdc.selfName;
 
 // On open, queued updates arrive synchronously through setUpdateListener.
 // If none of them set a state (e.g. the bot didn't know about this app
