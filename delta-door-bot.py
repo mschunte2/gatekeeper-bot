@@ -26,15 +26,8 @@ import time
 from pathlib import Path
 
 from appdirs import user_config_dir
-from deltachat2 import MsgData, events
+from deltachat2 import EventType, MsgData, events
 from deltabot_cli import BotCli
-
-# EventType lives in different namespaces across deltachat2 / deltabot_cli
-# versions; try the modern path first.
-try:
-    from deltachat2.const import EventType
-except ImportError:  # pragma: no cover -- older layout
-    from deltabot_cli.const import EventType
 
 cli = BotCli("gatekeeper")
 
