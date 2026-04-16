@@ -352,6 +352,23 @@ chat sees the same current lock state in real time.
 The app heading shows `DOOR_NAME` from `.env`. The bot pushes that name
 to the app on startup; clients see it once they open the app.
 
+**Audit trail.** Every app-driven command also produces a visible
+chat message in the originating chat (text-driven commands are already
+named by the user's own message, so no extra audit line is added):
+
+```
+device opened
+🔓 Hoftor opened by Matthias
+```
+
+For failures: `❌ Hoftor: open by Matthias failed`.
+
+**Automatic retry.** A non-zero exit from `send-command.sh` (typical
+BLE-side transient -- timeout, missed ACK) is retried once before the
+failure is reported. The chat sees a brief `(Hoftor: BLE retry…)`
+note while the retry is in progress; only the final attempt's
+output is echoed.
+
 ---
 
 ## 8. Troubleshooting

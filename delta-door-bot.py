@@ -52,6 +52,15 @@ SEND_COMMAND_SH = str(HERE / "send-command.sh")
 # paths. Anything else is rejected before reaching the subprocess.
 VALID_COMMANDS = {"lock", "unlock", "open", "status"}
 
+# Audit line shown in chat when an app button triggers a command.
+# (emoji, past-tense verb) -- used as: "{emoji} {DOOR_NAME} {verb} by {name}"
+_AUDIT_VERB = {
+    "lock": ("🔒", "locked"),
+    "unlock": ("🔓", "unlocked"),
+    "open": ("🔓", "opened"),
+    "status": ("ℹ️", "status checked"),
+}
+
 MAX_AGE_SECONDS = 30  # text-message replay-protection window
 
 # ------------------------------------------------------- env-derived config
@@ -165,11 +174,17 @@ def run_lock_command(
     chatid: int,
     source_msgid: int | None,
     command: str,
+    actor_name: str | None = None,
 ) -> None:
     """Execute send-command.sh, echo output to chat, broadcast state.
 
     `source_msgid` is the user's text-message id for reactions; pass None
-    for app-driven invocations (no reactions then).
+    for app-driven invocations.
+    `actor_name` is the webxdc selfName for app-driven invocations; pass
+    None for text-driven ones (then no audit line is sent -- the user's
+    own text message already names them).
+
+    Retries once on a non-zero exit (typical BLE transient).
     """
     global _last_known_state
 
@@ -184,16 +199,27 @@ def run_lock_command(
     if source_msgid is not None:
         bot.rpc.send_reaction(accid, source_msgid, ["⌛"])
 
-    proc = subprocess.run(
-        [SEND_COMMAND_SH, command],
-        encoding="utf-8",
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    def _run() -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [SEND_COMMAND_SH, command],
+            encoding="utf-8",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
 
-    # Echo each non-empty line back to the originating chat (preserves the
-    # original text-bot behaviour). Done for app path too so chat history
-    # stays useful.
+    proc = _run()
+    if proc.returncode != 0:
+        bot.logger.warning(
+            f"send-command.sh {command} rc={proc.returncode}; retrying once"
+        )
+        bot.rpc.send_msg(
+            accid, chatid,
+            MsgData(text=f"({DOOR_NAME}: BLE retry…)"),
+        )
+        proc = _run()
+
+    # Echo final attempt's output (preserves text-path UX; visible audit
+    # for app path).
     for line in proc.stdout.splitlines():
         if line.strip():
             bot.rpc.send_msg(accid, chatid, MsgData(text=line))
@@ -201,10 +227,19 @@ def run_lock_command(
         if line.strip():
             bot.rpc.send_msg(accid, chatid, MsgData(text=line))
 
+    # Audit line for app-triggered commands.
+    if actor_name is not None:
+        emoji, verb = _AUDIT_VERB.get(command, ("🔧", command))
+        if proc.returncode == 0:
+            audit = f"{emoji} {DOOR_NAME} {verb} by {actor_name}"
+        else:
+            audit = f"❌ {DOOR_NAME}: {command} by {actor_name} failed"
+        bot.rpc.send_msg(accid, chatid, MsgData(text=audit))
+
     if proc.returncode != 0:
         new_state = "error"
         bot.logger.warning(
-            f"send-command.sh {command} rc={proc.returncode}"
+            f"send-command.sh {command} rc={proc.returncode} after retry"
         )
     else:
         new_state = parse_state_from_output(proc.stdout) or "unknown"
@@ -269,7 +304,12 @@ def on_webxdc_update(bot, accid, event):
         bot.logger.warning(f"refusing webxdc command {cmd!r}")
         return
 
-    run_lock_command(bot, accid, chatid, source_msgid=None, command=cmd)
+    run_lock_command(
+        bot, accid, chatid,
+        source_msgid=None,
+        command=cmd,
+        actor_name=str(name).strip() or "?",
+    )
 
 
 @cli.on(events.NewMessage)
