@@ -21,8 +21,8 @@ one backend:
   is "after touching this app the lock is closed"). Tap to retry if
   the lock didn't engage. Tagged internally as `app: "quick-lock"`.
 
-Both apps speak the same protocol; the bot doesn't behave differently
-per app (the `app` tag is only logged for debugging).
+All three apps speak the same protocol; the bot doesn't behave
+differently per app (the `app` tag is only logged for debugging).
 
 All paths converge on `send-command.sh`, which calls
 [`keyblepy`](./keyblepy/) over BLE. State pushes flow back from the
@@ -41,8 +41,9 @@ the change came from an app, a text command, or another allowed chat.
 All runtime configuration and secrets live in a single `.env` file at the
 repo root (see `.env.example`). Scripts source `.env` on startup;
 `delta-door-bot.py` reads env vars via `os.environ`. The webxdc apps
-are built once into `apps/gatekeeper.xdc` and `apps/quick-unlock.xdc`
-(tracked artifacts); see [Building the apps](#11-building-the-webxdc-apps).
+are built into `apps/<id>.xdc` (tracked artifacts -- see
+[Building the apps](#11-building-the-webxdc-apps)). The bot
+auto-discovers them on each `/apps` call.
 
 ---
 

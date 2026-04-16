@@ -498,7 +498,8 @@ def _on_start(bot, _args):
         f"app_instances={total_instances}"
     )
 
-    # Seed the icon by querying the lock once (per design point #3).
+    # Seed the icon by querying the lock once so app instances opened
+    # before any user action already show the right state.
     try:
         proc = subprocess.run(
             [SEND_COMMAND_SH, "status"],

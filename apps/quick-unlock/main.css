@@ -35,13 +35,13 @@ h1 {
   border-radius: 1rem;
 }
 
-/* Pending / opening state: yellow pulse to communicate "in progress". */
+/* Transitional 'opening' state: orange pulse to communicate "in progress". */
 .slider.opening {
   animation: slider-pulse 1.4s ease-in-out infinite;
 }
 @keyframes slider-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.55); }
-  50% { box-shadow: 0 0 0 14px rgba(251, 191, 36, 0); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(249, 115, 22, 0.55); }
+  50% { box-shadow: 0 0 0 14px rgba(249, 115, 22, 0); }
 }
 
 .status {
@@ -52,7 +52,7 @@ h1 {
   font-size: 1rem;
   margin-top: 0.5rem;
 }
-/* User-facing colour semantics: green=open, red=closed, yellow=opening. */
+/* User-facing colour semantics: green=open, red=closed, orange=opening. */
 .status.open    { background: #e6f4ea; color: #1e6f24; }
 .status.closed  { background: #fdecea; color: #8b1f1f; }
-.status.opening { background: #fff8df; color: #6b5400; }
+.status.opening { background: #fff3e0; color: #7a3500; }

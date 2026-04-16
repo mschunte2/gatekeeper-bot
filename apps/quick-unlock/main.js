@@ -6,7 +6,7 @@ const STARTING_FRAME_MS = 1000; // how long to linger on the red "starting" fram
 // User-facing colour semantics (NOT lock-state semantics):
 //   green = open       (target / success)
 //   red   = closed     (starting / failure)
-//   yellow= opening    (transitional / pending)
+//   orange= opening    (transitional / pending)
 const STATE_IMG = {
   open: "./open.png",
   closed: "./closed.png",
