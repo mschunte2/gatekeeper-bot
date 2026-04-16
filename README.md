@@ -16,6 +16,10 @@ one backend:
 - **Quick-Unlock webxdc app** -- one-tap door opener: opening the app
   immediately requests `open`. Pin it to your phone's home screen for
   one-click entry. Tagged internally as `app: "quick-unlock"`.
+- **Quick-Lock webxdc app** -- one-tap door closer: opening the app
+  immediately requests `lock`. No open direction, by design (priority
+  is "after touching this app the lock is closed"). Tap to retry if
+  the lock didn't engage. Tagged internally as `app: "quick-lock"`.
 
 Both apps speak the same protocol; the bot doesn't behave differently
 per app (the `app` tag is only logged for debugging).
@@ -358,10 +362,21 @@ returns to the actual state when the bot's response arrives (or to
 #### Quick-Unlock (`apps/quick-unlock.xdc`)
 
 Designed to pin to your phone's home screen. **Opening the app
-immediately sends `open`** to the bot -- one tap, door open. After
-the response arrives the slider visual flips between the green
-locked-padlock and the red unlocked-padlock images. Tap the slider to
-refresh the state on demand.
+immediately sends `open`** to the bot -- one tap, door open. The
+slider stays on red ("Closed", starting frame) until the bot acks
+the request, then transitions through orange ("Opening…") to green
+("Open"). Tap the green slider to lock again (green → orange → red);
+tap red to open again. The chat-message preview icon is the green
+"Open" image (the target state for this app).
+
+#### Quick-Lock (`apps/quick-lock.xdc`)
+
+Mirror of Quick-Unlock with the priority "after touching this app the
+lock is closed". **Opening the app immediately sends `lock`**. Visual
+goes from green ("Open") through orange ("Closing…") to red
+("Closed"). There is no open direction here -- a tap on a
+non-closed slider only retries the lock command. The chat-message
+preview icon is the red "Closed" image (the target state).
 
 #### State updates
 
@@ -466,11 +481,16 @@ gatekeeper-bot/
 |-- apps/                        (webxdc apps -- sources + built artifacts)
 |   |-- gatekeeper.xdc           (built artifact, tracked)
 |   |-- quick-unlock.xdc         (built artifact, tracked)
+|   |-- quick-lock.xdc           (built artifact, tracked)
 |   |-- gatekeeper/              (full lock-control app source)
 |   |   |-- index.html main.js main.css
 |   |   |-- vite.config.mjs package.json
 |   |   \-- public/              (icon, manifest)
-|   \-- quick-unlock/            (one-tap-unlock app source)
+|   |-- quick-unlock/            (one-tap-unlock app source)
+|   |   |-- index.html main.js main.css
+|   |   |-- vite.config.mjs package.json
+|   |   \-- public/              (slider images, icon, manifest)
+|   \-- quick-lock/              (one-tap-lock app source -- inverse of quick-unlock)
 |       |-- index.html main.js main.css
 |       |-- vite.config.mjs package.json
 |       \-- public/              (slider images, icon, manifest)
@@ -513,6 +533,10 @@ npm run build    # writes ../gatekeeper.xdc
 cd ../quick-unlock
 npm install      # one-time
 npm run build    # writes ../quick-unlock.xdc
+
+cd ../quick-lock
+npm install      # one-time
+npm run build    # writes ../quick-lock.xdc
 ```
 
 Each `vite.config.mjs` writes the bundled `.xdc` one level up, into

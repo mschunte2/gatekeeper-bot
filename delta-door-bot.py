@@ -52,6 +52,7 @@ HERE = Path(__file__).resolve().parent
 XDC_PATHS = [
     ("gatekeeper",   str(HERE / "apps" / "gatekeeper.xdc")),    # full lock-control app
     ("quick-unlock", str(HERE / "apps" / "quick-unlock.xdc")),  # one-tap-unlock app
+    ("quick-lock",   str(HERE / "apps" / "quick-lock.xdc")),    # one-tap-lock app
 ]
 SEND_COMMAND_SH = str(HERE / "send-command.sh")
 
