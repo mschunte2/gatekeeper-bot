@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 """Gatekeeper bot: text + webxdc app control of an Eqiva Smart Lock.
 
-Text path (UNCHANGED behaviour):
+Text path:
     /lock | /zu       -> send-command.sh lock
     /unlock | /auf    -> send-command.sh unlock
     /status           -> send-command.sh status
     /id               -> reply with this chat's id (always allowed)
-    /app              -> (re)send the webxdc app to this chat
+    /apps             -> (re)send all webxdc apps to this chat
     anything else     -> help text
 
-App path (NEW):
-    closed-lock button -> 'lock'
-    open-lock button   -> 'open'
-    door button        -> 'status'
+Webxdc apps (apps/<id>.xdc), all sharing one protocol:
+    {request: {name, text: lock|open|status, app: <id>}}
+    -> bot whitelists `text` against {lock, unlock, open, status},
+       runs send-command.sh, broadcasts state back as
+    {response: {name, text: locked|unlocked|unknown|error}}
+    The `app` field is logged for debug but does not affect routing.
 
 Permission: ALLOWED_CHATS is the single allow-list for both text and app
 operations. /id is the only command exempt (needed for setup).
@@ -67,6 +69,19 @@ _AUDIT_VERB = {
 }
 
 MAX_AGE_SECONDS = 30  # text-message replay-protection window
+
+# Strip control chars / newlines from values that arrive over the wire
+# and might end up in log lines or chat messages.
+_CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _sanitize(value, fallback: str = "?", max_len: int = 64) -> str:
+    if not isinstance(value, str):
+        value = str(value) if value is not None else ""
+    cleaned = _CTRL_RE.sub(" ", value).strip()
+    if not cleaned:
+        return fallback
+    return cleaned[:max_len]
 
 # ------------------------------------------------------- env-derived config
 
@@ -145,11 +160,18 @@ def parse_state_from_output(text: str) -> str | None:
 # ---------------------------------------------------------------- app push
 
 def _push_state(bot, accid: int, state: str) -> int:
-    """Broadcast `state` to every known app instance. Returns push count."""
+    """Broadcast `state` to every known app instance in an ALLOWED chat.
+
+    Skips msgids in chats that are no longer in ALLOWED_CHATS -- the
+    state file may carry leftovers from chats the admin has since
+    removed from the allow-list.
+    """
     update = {"payload": {"response": {"name": "bot", "text": state}}}
     body = json.dumps(update)
     pushed = 0
     for chatid, msgids in list(_msgid_map.items()):
+        if not _is_allowed(chatid):
+            continue
         for msgid in msgids:
             try:
                 bot.rpc.send_webxdc_status_update(accid, msgid, body, "")
@@ -319,9 +341,13 @@ def on_webxdc_update(bot, accid, event):
     if not isinstance(req, dict):
         return  # not a user request -- our own response or unrelated update
 
-    cmd = (req.get("text") or "").strip().lower()
-    name = req.get("name") or "?"
-    app_id = (req.get("app") or "?").strip() or "?"  # debug only -- not user-visible
+    # Defensive: req["text"] / "name" / "app" might not be strings if the
+    # peer sends a malformed payload. Cast + sanitize first so bad input
+    # can't crash str ops below or pollute log/chat lines.
+    cmd_raw = req.get("text")
+    cmd = str(cmd_raw).strip().lower() if cmd_raw is not None else ""
+    name = _sanitize(req.get("name"))
+    app_id = _sanitize(req.get("app"))
 
     msg = bot.rpc.get_message(accid, msgid)
     chatid = msg.chat_id
@@ -363,7 +389,7 @@ def on_webxdc_update(bot, accid, event):
         bot, accid, chatid,
         source_msgid=None,
         command=cmd,
-        actor_name=str(name).strip() or "?",
+        actor_name=name,
     )
 
 
@@ -452,12 +478,15 @@ def _on_start(bot, _args):
         bot.logger.warning(f"startup status probe failed: {ex}")
         _last_known_state = "unknown"
 
-    # Push door_name + state to every known instance (silent, info="").
+    # Push door_name + state to every known instance in an allowed chat
+    # (silent, info=""). _push_state already filters; do the same here.
     accounts = bot.rpc.get_all_account_ids()
     if not accounts:
         return
     accid = accounts[0]
-    for _chatid, msgids in list(_msgid_map.items()):
+    for chatid, msgids in list(_msgid_map.items()):
+        if not _is_allowed(chatid):
+            continue
         for msgid in msgids:
             _push_door_name(bot, accid, msgid)
     _push_state(bot, accid, _last_known_state)
