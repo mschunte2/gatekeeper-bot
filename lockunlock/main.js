@@ -19,6 +19,15 @@ const STATE_LABELS = {
   error: "Error",
 };
 
+const PENDING_VERB = {
+  lock: "locking",
+  unlock: "unlocking",
+  open: "opening",
+  status: "checking",
+};
+
+const PENDING_TIMEOUT_MS = 60000;
+
 const doorBtn = document.getElementById("doorBtn");
 const doorIcon = document.getElementById("doorIcon");
 const statusEl = document.getElementById("status");
@@ -26,7 +35,19 @@ const statusText = document.getElementById("statusText");
 const doorNameEl = document.getElementById("doorName");
 const deviceNameEl = document.getElementById("deviceName");
 
+let _pendingTimer = null;
+
+function clearPending() {
+  if (_pendingTimer !== null) {
+    clearTimeout(_pendingTimer);
+    _pendingTimer = null;
+  }
+  doorBtn.classList.remove("pending");
+  statusEl.classList.remove("pending");
+}
+
 function setDoorState(state) {
+  clearPending();
   if (!DOOR_ICONS[state]) state = "unknown";
   doorIcon.innerHTML = DOOR_ICONS[state];
   doorBtn.className = "round-btn door-pos " + state;
@@ -34,11 +55,25 @@ function setDoorState(state) {
   statusText.textContent = "Door: " + STATE_LABELS[state];
 }
 
+function setPending(command) {
+  doorBtn.classList.add("pending");
+  statusEl.classList.add("pending");
+  statusText.textContent = "Door: " + (PENDING_VERB[command] || "working") + "…";
+  if (_pendingTimer !== null) clearTimeout(_pendingTimer);
+  _pendingTimer = setTimeout(() => {
+    _pendingTimer = null;
+    doorBtn.classList.remove("pending");
+    statusEl.classList.remove("pending");
+    statusText.textContent = "Door: timeout (no response)";
+  }, PENDING_TIMEOUT_MS);
+}
+
 function setDoorName(name) {
   doorNameEl.textContent = (name && String(name).trim()) || DEFAULT_DOOR_NAME;
 }
 
 function send(command) {
+  setPending(command);
   window.webxdc.sendUpdate(
     {
       payload: {

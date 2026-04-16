@@ -135,3 +135,30 @@ h1 {
   border-color: #c0392b;
   background: #fdecea;
 }
+
+/* Pending feedback while waiting for the bot's response. The "pending"
+   class is added on top of the existing state class so the icon stays
+   visible (giving context about the last known state) while the colour
+   and pulsing glow signal that an operation is in flight. */
+.door-pos.pending {
+  border-color: #f0b400 !important;
+  background: #fff8df;
+  animation: door-pulse 1.4s ease-in-out infinite;
+}
+@keyframes door-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(240, 180, 0, 0.55); }
+  50% { box-shadow: 0 0 0 12px rgba(240, 180, 0, 0); }
+}
+
+.status.pending {
+  background: #fff8df !important;
+  color: #6b5400 !important;
+}
+.status.pending .dot {
+  background: #f0b400 !important;
+  animation: dot-pulse 1s ease-in-out infinite;
+}
+@keyframes dot-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
