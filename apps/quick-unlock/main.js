@@ -35,6 +35,7 @@ const doorNameEl = document.getElementById("doorName");
 const deviceNameEl = document.getElementById("deviceName");
 
 let _pendingTimer = null;
+let _currentState = "closed"; // last confirmed state (for toggle decisions)
 
 function setState(state) {
   if (_pendingTimer !== null) {
@@ -42,6 +43,7 @@ function setState(state) {
     _pendingTimer = null;
   }
   if (!STATE_IMG[state]) state = "closed";
+  _currentState = state;
   sliderImg.src = STATE_IMG[state];
   slider.className = "slider " + state;
   statusEl.className = "status " + state;
@@ -105,10 +107,18 @@ window.webxdc.setUpdateListener((update) => {
   }
 });
 
-// Tap the slider to refresh the current state on demand.
-slider.addEventListener("click", () => send("status", "Checking…"));
+// Tap the slider to toggle: open (green) -> lock; closed (red) -> open.
+// Taps while a request is pending are ignored to avoid racing the bot.
+slider.addEventListener("click", () => {
+  if (_pendingTimer !== null) return; // request in flight, ignore
+  if (_currentState === "open") {
+    send("lock", "Closing…");
+  } else {
+    send("open", "Opening…");
+  }
+});
 
-// One-tap UX: linger on the red "starting" frame for a beat so the
-// transition reads, then flip to the yellow "opening" frame and fire
-// the actual open command. The bot's response will switch us to green.
+// One-tap UX on app open: linger on the red "starting" frame so the
+// transition reads, then auto-fire the actual open command. After this
+// initial cycle the user can keep tapping the slider to toggle.
 setTimeout(() => send("open", "Opening…"), STARTING_FRAME_MS);

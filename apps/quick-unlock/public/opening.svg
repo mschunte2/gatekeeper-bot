@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 400">
   <!-- yellow pill body matching the green/red slider style -->
-  <rect x="40" y="40" width="720" height="320" rx="160" ry="160" fill="#fbbf24"/>
+  <rect x="40" y="40" width="720" height="320" rx="160" ry="160" fill="#f97316"/>
 
   <!-- white knob in centre (sliding mid-way) -->
   <circle cx="400" cy="200" r="135" fill="white"/>
