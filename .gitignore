@@ -6,6 +6,11 @@ key.hex
 # Python venv
 venv/
 
+# webxdc app build output and JS deps (lockunlock/ is the source;
+# the built artifact lives at app.xdc which IS tracked).
+lockunlock/node_modules/
+lockunlock/dist/
+
 # local bluepy build (checked out via pip install -e for the fast path)
 bluepy/
 
