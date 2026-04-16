@@ -35,6 +35,7 @@ const doorNameEl = document.getElementById("doorName");
 const deviceNameEl = document.getElementById("deviceName");
 
 let _pendingTimer = null;
+let _pendingLabel = ""; // shown once the bot acks the request
 let _currentState = "closed"; // last confirmed state (for toggle decisions)
 
 function setState(state) {
@@ -50,21 +51,14 @@ function setState(state) {
   statusText.textContent = STATE_LABEL[state];
 }
 
-function setPending(label) {
-  // Show the yellow transitional and arm a timeout fallback so the UI
-  // can't get stuck if the bot never replies.
+function setPending() {
+  // Called when the bot's ack arrives -- swap in the orange "in progress"
+  // visual. The pending timer set by send() keeps running so it still
+  // covers the rest of the round-trip.
   sliderImg.src = STATE_IMG.opening;
   slider.className = "slider opening";
   statusEl.className = "status opening";
-  statusText.textContent = label || STATE_LABEL.opening;
-  if (_pendingTimer !== null) clearTimeout(_pendingTimer);
-  _pendingTimer = setTimeout(() => {
-    _pendingTimer = null;
-    sliderImg.src = STATE_IMG.closed;
-    slider.className = "slider closed";
-    statusEl.className = "status closed";
-    statusText.textContent = "Timeout (no response)";
-  }, PENDING_TIMEOUT_MS);
+  statusText.textContent = _pendingLabel || STATE_LABEL.opening;
 }
 
 function setDoorName(name) {
@@ -72,7 +66,20 @@ function setDoorName(name) {
 }
 
 function send(command, label) {
-  setPending(label);
+  // Don't change the visual yet -- keep the current state (e.g. red)
+  // showing until the bot acks the request. setPending() will be
+  // called from the ack handler in setUpdateListener below.
+  _pendingLabel = label || STATE_LABEL.opening;
+  if (_pendingTimer !== null) clearTimeout(_pendingTimer);
+  _pendingTimer = setTimeout(() => {
+    _pendingTimer = null;
+    // Bot didn't ack/reply within PENDING_TIMEOUT_MS -- drop back to
+    // a safe visual so the user can retry.
+    sliderImg.src = STATE_IMG.closed;
+    slider.className = "slider closed";
+    statusEl.className = "status closed";
+    statusText.textContent = "Timeout (no response)";
+  }, PENDING_TIMEOUT_MS);
   window.webxdc.sendUpdate(
     {
       payload: {
@@ -98,6 +105,11 @@ window.webxdc.setUpdateListener((update) => {
   const payload = update.payload || {};
   if (payload.config && typeof payload.config.door_name === "string") {
     setDoorName(payload.config.door_name);
+  }
+  // Bot acknowledged that it received the command -- now we can switch
+  // to the orange "in progress" visual.
+  if (payload.ack && _pendingTimer !== null) {
+    setPending();
   }
   const resp = payload.response;
   if (resp) {

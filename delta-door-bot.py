@@ -191,6 +191,28 @@ def _push_door_name(bot, accid: int, msgid: int) -> None:
         bot.logger.warning(f"push door_name to msgid {msgid} failed: {ex}")
 
 
+def _push_ack(bot, accid: int, cmd: str) -> int:
+    """Tell every active app instance that we received a command and are
+    about to run it. Apps may use this to show a transitional 'in
+    progress' visual without guessing how long the BLE round-trip
+    takes. Apps that don't care just ignore the payload.
+    """
+    body = json.dumps({"payload": {"ack": cmd}})
+    pushed = 0
+    for chatid, msgids in list(_msgid_map.items()):
+        if not _is_allowed(chatid):
+            continue
+        for msgid in msgids:
+            try:
+                bot.rpc.send_webxdc_status_update(accid, msgid, body, "")
+                pushed += 1
+            except Exception as ex:
+                bot.logger.warning(
+                    f"ack push to chat {chatid} msgid {msgid} failed: {ex}"
+                )
+    return pushed
+
+
 def _send_apps(bot, accid: int, chatid: int) -> list[int]:
     """Send every available .xdc to `chatid` and remember the new msgids.
 
@@ -384,6 +406,11 @@ def on_webxdc_update(bot, accid, event):
     if cmd not in VALID_COMMANDS:
         bot.logger.warning(f"refusing webxdc command {cmd!r}")
         return
+
+    # Tell apps "command received, working on it" before the BLE
+    # round-trip blocks the event loop for several seconds. Apps that
+    # render a transitional state can switch immediately.
+    _push_ack(bot, accid, cmd)
 
     run_lock_command(
         bot, accid, chatid,
