@@ -352,16 +352,19 @@ chat sees the same current lock state in real time.
 The app heading shows `DOOR_NAME` from `.env`. The bot pushes that name
 to the app on startup; clients see it once they open the app.
 
-**Audit trail.** Every app-driven command also produces a visible
-chat message in the originating chat (text-driven commands are already
-named by the user's own message, so no extra audit line is added):
+**Audit trail.** Every state-changing app command produces a single
+concise chat line `{icon} {DOOR_NAME} {actor}` in the originating chat:
 
 ```
-device opened
-🔓 Hoftor opened by Matthias
+🔓 Hoftor Matthias       (opened)
+🔒 Hoftor Matthias       (locked)
+❌ Hoftor Matthias (lock failed)
 ```
 
-For failures: `❌ Hoftor: open by Matthias failed`.
+`status` requests don't produce an audit line (read-only; the app
+auto-requests it on open). Text-driven commands keep their original
+output (`device locked` etc.) -- the user's own `/lock` message
+already identifies them.
 
 **Automatic retry.** A non-zero exit from `send-command.sh` (typical
 BLE-side transient -- timeout, missed ACK) is retried once before the

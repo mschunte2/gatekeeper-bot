@@ -232,11 +232,11 @@ def run_lock_command(
     # Audit line for app-triggered commands. Skip 'status' because it is
     # read-only and noisy (the app auto-requests it on open).
     if actor_name is not None and command != "status":
-        emoji, verb = _AUDIT_VERB.get(command, ("🔧", command))
+        emoji, _verb = _AUDIT_VERB.get(command, ("🔧", command))
         if proc.returncode == 0:
-            audit = f"{emoji} {DOOR_NAME} {verb} by {actor_name}"
+            audit = f"{emoji} {DOOR_NAME} {actor_name}"
         else:
-            audit = f"❌ {DOOR_NAME}: {command} by {actor_name} failed"
+            audit = f"❌ {DOOR_NAME} {actor_name} ({command} failed)"
         bot.rpc.send_msg(accid, chatid, MsgData(text=audit))
 
     if proc.returncode != 0:
