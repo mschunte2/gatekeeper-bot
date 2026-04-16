@@ -47,14 +47,19 @@ DEFAULT_HELP_MESSAGE = (
 )
 
 HERE = Path(__file__).resolve().parent
-# (app_id, .xdc path) pairs. Each app is sent to a chat by /apps and
-# tracked independently in _msgid_map[chatid].
-XDC_PATHS = [
-    ("gatekeeper",   str(HERE / "apps" / "gatekeeper.xdc")),    # full lock-control app
-    ("quick-unlock", str(HERE / "apps" / "quick-unlock.xdc")),  # one-tap-unlock app
-    ("quick-lock",   str(HERE / "apps" / "quick-lock.xdc")),    # one-tap-lock app
-]
+APPS_DIR = HERE / "apps"
 SEND_COMMAND_SH = str(HERE / "send-command.sh")
+
+
+def _xdc_paths() -> list[tuple[str, str]]:
+    """Discover available webxdc apps as (app_id, full_path) pairs.
+
+    Scans `apps/*.xdc`; the app_id is just the file stem so dropping a
+    new <name>.xdc into apps/ is enough -- no code change required.
+    Files are returned in sorted order so the sequence of messages
+    /apps sends is deterministic.
+    """
+    return [(p.stem, str(p)) for p in sorted(APPS_DIR.glob("*.xdc"))]
 
 # Whitelist of accepted lock-operation tokens. Used by BOTH text and app
 # paths. Anything else is rejected before reaching the subprocess.
@@ -222,7 +227,11 @@ def _send_apps(bot, accid: int, chatid: int) -> list[int]:
     refreshed by silent state pushes.
     """
     sent: list[int] = []
-    for app_id, path in XDC_PATHS:
+    paths = _xdc_paths()
+    if not paths:
+        bot.logger.warning(f"no .xdc files found in {APPS_DIR}; nothing to send")
+        return sent
+    for app_id, path in paths:
         try:
             msgid = int(bot.rpc.send_msg(accid, chatid, MsgData(file=path)))
         except Exception as ex:

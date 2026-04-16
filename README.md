@@ -557,5 +557,19 @@ Each `vite.config.mjs` writes the bundled `.xdc` one level up, into
 - All bot-side state updates use empty `info` so they're silent in the
   chat.
 
-After rebuilding either app, commit the updated `.xdc` so deploys can
+After rebuilding any app, commit the updated `.xdc` so deploys can
 skip the Node toolchain.
+
+### 11.4 Adding a new app
+
+The bot discovers apps by scanning `apps/*.xdc` -- there is no
+hard-coded list. To add a new app:
+
+1. Create `apps/<id>/` with its own `vite.config.mjs` (point
+   `outDir: "../"` and `outFileName: "<id>.xdc"`).
+2. Implement the same protocol: send `{request: {name, text, app: "<id>"}}`,
+   listen for `{response}`, `{config}`, optionally `{ack}`.
+3. `npm install && npm run build`. The resulting `apps/<id>.xdc` is
+   picked up automatically the next time `/apps` runs (no bot
+   restart needed if the file appears between two `/apps` calls;
+   for new chats the bot also picks it up at startup).
