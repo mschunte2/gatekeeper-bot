@@ -40,8 +40,7 @@ activate_venv() {
 # Sets: HCI_IFACE, ADAPTER_LABEL, ADAPTER_BD, BLE_LOCK_FILE.
 # Preference order:
 #   1. $ADAPTER_MAC from .env (stable across reboots)
-#   2. $HCI_IFACE already in the environment (deprecated override)
-#   3. Built-in UART adapter (fallback)
+#   2. Built-in UART adapter (fallback when ADAPTER_MAC is unset)
 # Exits 4 if no usable adapter is found.
 
 resolve_adapter() {
@@ -55,8 +54,6 @@ resolve_adapter() {
             exit 4
         fi
         ADAPTER_LABEL="$ADAPTER_MAC (hci${HCI_IFACE})"
-    elif [ -n "$HCI_IFACE" ]; then
-        ADAPTER_LABEL="hci${HCI_IFACE}"
     else
         HCI_IFACE=$(hciconfig -a 2>/dev/null \
             | grep -B1 "Bus: UART" \
