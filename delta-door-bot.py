@@ -151,6 +151,14 @@ def _load_msgids() -> dict[int, dict[str, int]]:
             f"{legacy_dropped}; run /apps in each chat to re-seed",
             flush=True,
         )
+        # Rewrite the file so the next startup doesn't re-log the same
+        # drop; without this the legacy entries linger on disk forever
+        # (they're only read, never replaced, until a /apps call).
+        try:
+            _save_msgids(out)
+        except Exception as ex:
+            print(f"[gatekeeper-bot] failed to rewrite app_msgids.json: {ex}",
+                  flush=True)
     return out
 
 
