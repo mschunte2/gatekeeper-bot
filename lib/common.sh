@@ -109,14 +109,23 @@ _ensure_lock_file() {
     chmod 0666 "$BLE_LOCK_FILE" 2>/dev/null || true
 }
 
-# Acquire the flock on fd 9 (non-blocking). Exit 3 on collision.
+# Acquire the flock on fd 9 with a 20-second bounded wait. A real
+# BLE operation takes ~2-8 s over an existing bond, so 20 s is
+# enough to absorb a single concurrent request (the common case in
+# the two-bot deployment: both locks receive a tap at nearly the
+# same moment). Only genuine contention beyond that window surfaces
+# as exit 3 -- callers / apps treat that as a "busy, try again"
+# signal rather than a hard error.
+#
+# BLE_LOCK_WAIT_SECONDS is overridable (useful for interactive admin
+# scripts like pair-lock.sh that may want to fail fast).
+: "${BLE_LOCK_WAIT_SECONDS:=20}"
 acquire_ble_lock() {
     _ensure_lock_file
     exec 9>"$BLE_LOCK_FILE"
-    if ! flock -n 9; then
-        echo "BLE adapter busy (likely the bot is running)." >&2
-        echo "Stop the bot (e.g. sudo systemctl stop deltabot-hoftor)" >&2
-        echo "or wait for the current operation to finish, then retry." >&2
+    if ! flock -w "$BLE_LOCK_WAIT_SECONDS" 9; then
+        echo "BLE adapter busy (waited ${BLE_LOCK_WAIT_SECONDS}s for another operation to finish)." >&2
+        echo "Retry in a few seconds." >&2
         exit 3
     fi
 }
