@@ -1,0 +1,26 @@
+[Unit]
+# Runs before bluetooth.service at every boot. If a USB Bluetooth
+# adapter fails its initial firmware download (a known flaky
+# behaviour with Realtek RTL8761 dongles on Pi-class USB ports),
+# reload the btusb kernel module a few times to give it another
+# chance. If recovery fails, log a warning and exit 1 -- systemd
+# still proceeds because SuccessExitStatus includes 1; operator
+# can recover with a physical replug.
+Description=Recover USB Bluetooth adapter from firmware-load failure
+DefaultDependencies=no
+After=systemd-modules-load.service local-fs.target
+Before=bluetooth.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/bt-adapter-wait
+TimeoutStartSec=60s
+# Treat exit 1 (recovery-failed) as "fine, move on" so the rest of
+# the boot isn't blocked. The script logs prominently when this
+# happens; `journalctl -u bt-adapter-wait -b` shows the outcome.
+SuccessExitStatus=0 1
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=bluetooth.service

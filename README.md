@@ -49,11 +49,53 @@ auto-discovers them on each `/apps` call.
 
 ## 1. Prerequisites
 
-- **Hardware** -- a Raspberry Pi (Zero 2 W tested) with working Bluetooth.
-  Either the onboard Broadcom radio or a USB BT dongle works. Physical
-  proximity to the lock matters: for a reliable BLE link target RSSI >= -85 dBm
-  (~5 m line-of-sight or closer).
-- **OS** -- Raspberry Pi OS Bookworm or equivalent Debian 12. Python 3.11+.
+### Hardware -- reference deployment
+
+The project is developed and tested on:
+
+- **Host** -- Raspberry Pi Zero 2 W (ARMv8, 512 MB RAM).
+- **OS** -- Raspberry Pi OS (Debian 12 Bookworm), 64-bit. Python 3.11+.
+- **Bluetooth** -- Realtek RTL8761BU-based USB dongle with an external
+  antenna (USB ID `0bda:a729`, advertised as "Bluetooth 5.3 Radio").
+  The onboard Broadcom BCM43430A1 radio (hci0) also works and is
+  used as a fallback/verification adapter, but its integrated antenna
+  only reaches short line-of-sight; the external-antenna dongle is
+  the reliable path for locks more than a couple of metres away or
+  through walls.
+- **Locks** -- Eqiva eQ-3 Smart Lock (this project covers two: a
+  gate lock and an indoor lock).
+
+Physical proximity still matters: for reliable GATT operation target
+RSSI ≥ -85 dBm. With the external-antenna dongle we see -65 to -75
+dBm through two interior walls at ~8 m; both locks reach the bot
+consistently. The onboard adapter was sufficient for one of the two
+locks at ~3 m line-of-sight but not for the gate lock at ~8 m.
+
+Other configurations should work in principle -- anything Linux,
+recent BlueZ (`bluetoothctl` present), Python 3.11+. The BLE layer
+is managed by `bluepy`; see section 2 for the version note.
+
+### Known Bluetooth-stack pitfall on this host
+
+Realtek RTL8761-series dongles on Pi-class USB ports sometimes
+fail their initial firmware download at boot with `RTL: download
+fw command failed (-110)` in dmesg. The adapter presents but has
+BD address `00:00:00:00:00:00` and stays DOWN. Without intervention
+all BLE operations then fail until a physical replug.
+
+The bundled `bt-adapter-wait.service` (see section 6.2) mitigates
+this: at boot, before `bluetooth.service`, it detects a wedged USB
+adapter and reloads the `btusb` kernel module up to three times to
+coax the firmware through. It's a per-host install (one for the
+whole Pi, shared by both bot instances) -- see the installer
+`install-bt-wait-service.sh`. If the adapter can't be recovered in
+software after all retries, the service logs that fact and
+bluetooth.service still starts; the operator then replugs the
+dongle physically. In our deployment the automatic recovery
+succeeds most of the time.
+
+### Other requirements
+
 - **A Delta Chat account** for the bot. Create it once interactively via
   `deltabot-cli init` (see [deltabot-cli](https://github.com/deltachat-bot/deltabot-cli-py)).
   The account's SQLite state ends up under `~/.config/<BOT_NAME>/`
@@ -372,6 +414,53 @@ sudo rm /etc/systemd/system/deltabot-<BOT_NAME>.service
 sudo systemctl daemon-reload
 ```
 
+### 6.5 Boot-time USB Bluetooth recovery (`bt-adapter-wait.service`)
+
+Realtek RTL8761 dongles on Pi-class USB ports sometimes fail their
+initial firmware download at boot (`RTL: download fw command failed
+(-110)` in dmesg), leaving the adapter with BD address
+`00:00:00:00:00:00` and status `DOWN`. Without intervention every
+BLE operation then fails until a physical replug. See section 1
+("Known Bluetooth-stack pitfall") for background.
+
+The bundled `bt-adapter-wait.service` runs once per boot, before
+`bluetooth.service`, and reloads the `btusb` kernel module up to
+three times to recover a wedged USB adapter. It's a **host-wide**
+install (one service for the whole Pi, not per-bot) so you run the
+installer once:
+
+```bash
+cd /home/pi/gatekeeper-bot   # from any bot clone on the host
+sudo ./install-bt-wait-service.sh
+```
+
+The installer copies `systemd-unit/bt-adapter-wait.sh` to
+`/usr/local/sbin/bt-adapter-wait` and
+`systemd-unit/bt-adapter-wait.service` to
+`/etc/systemd/system/bt-adapter-wait.service`, then enables the
+unit. Running the installer from a second bot clone is a safe no-op
+beyond re-copying identical files.
+
+Verify after a reboot:
+
+```bash
+journalctl -u bt-adapter-wait -b
+# expect one of:
+#   "USB BT adapter(s) ready at boot; no recovery needed"
+#   "USB BT adapter recovered after N reload(s)"
+#   "USB BT adapter still wedged after 3 attempts -- physical replug required"
+```
+
+The third message means this particular boot lost the race; replug
+the dongle and the bonds persist under `/var/lib/bluetooth/` so no
+re-pairing is needed.
+
+Uninstall:
+
+```bash
+sudo ./install-bt-wait-service.sh --uninstall
+```
+
 ---
 
 ## 7. Operating the lock
@@ -607,6 +696,8 @@ gatekeeper-bot/
 |-- register-user.sh             (one-shot registration wrapper)
 |-- install-systemd-unit.sh      (renders systemd-unit/*.template and
 |                                 installs deltabot-<BOT_NAME>.service)
+|-- install-bt-wait-service.sh   (host-wide installer for the USB-BT
+|                                 firmware-reload service; one-time)
 |-- keyblepy/                    (Python KeyBLE implementation, submodule)
 |   \-- README.md                (protocol-level docs, Python API)
 |-- apps/                        (webxdc apps -- sources + built artifacts)
@@ -627,8 +718,12 @@ gatekeeper-bot/
 |       |-- vite.config.mjs package.json
 |       \-- public/              (slider images, icon, manifest)
 |-- systemd-unit/
-|   \-- deltabot.service.template  (parameterised; rendered by
-|                                   install-systemd-unit.sh)
+|   |-- deltabot.service.template    (parameterised; rendered by
+|   |                                 install-systemd-unit.sh)
+|   |-- bt-adapter-wait.service      (host-wide; boot-time USB BT
+|   |                                 firmware-reload service)
+|   \-- bt-adapter-wait.sh           (the retry logic called by
+|                                     bt-adapter-wait.service)
 \-- venv/                        (Python venv, gitignored)
 ```
 
