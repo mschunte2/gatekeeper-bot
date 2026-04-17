@@ -13,6 +13,12 @@
 # "I forgot to rotate USER_KEY before registering, so I just clobbered
 # my own working key" foot-gun.
 #
+# No log file is ever written to disk: keyblepy's --verbose stream
+# echoes the new --user-key on the command-line, which makes any
+# captured log a credential leak. Output is held in shell memory only;
+# in -v mode it's also streamed live to the controlling TTY, and on
+# failure the captured output is dumped to stderr for debugging.
+#
 # Takes the same BLE flock as send-command.sh and pair-lock.sh, so
 # running this while the bot is active exits 3 rather than colliding
 # at the BLE layer.
@@ -24,11 +30,16 @@ usage() {
     cat <<EOF
 Usage: $(basename "$0") [-v|--verbose] [-h|--help]
 
-  -v, --verbose   Stream keyblepy's debug output to the terminal as well
-                  as the log file. Without this flag, only the framed
-                  success/failure summary is shown; the full log is
-                  always captured to /tmp/keyble-register.*.log.
+  -v, --verbose   Stream keyblepy's debug output live to the terminal
+                  while it runs. Without this flag, only the framed
+                  success/failure summary is printed; on failure, the
+                  captured output is then dumped to stderr.
   -h, --help      Show this help.
+
+No persistent log file is written. The captured output contains the
+generated --user-key in the keyblepy invocation line, so use a shell
+redirect (e.g. \`./register-user.sh -v 2>&1 | tee mylog\`) only when
+you knowingly want a copy and can manage its lifetime.
 EOF
 }
 while [[ $# -gt 0 ]]; do
@@ -50,51 +61,54 @@ resolve_adapter
 acquire_ble_lock
 
 NEW_USER_KEY=$(openssl rand -hex 16)
-LOG_FILE=$(mktemp -t keyble-register.XXXXXX.log)
-echo "Logging full keyblepy output to: $LOG_FILE" >&2
 
 cd keyblepy
-# We always pass --verbose to keyble.py and always capture the full
-# stream into $LOG_FILE -- that way the log on disk is complete
-# regardless of how the script was invoked, and post-mortem debugging
-# of a failure never needs the user to "run it again with -v".
+# We always pass --verbose to keyble.py so the FULL stream is available
+# to the wrapper -- both for grepping the REGISTRATION_SUCCESS line
+# and for surfacing diagnostics on failure. Whether the user *sees*
+# that stream live depends on -v on the wrapper:
 #
-# Whether the user *sees* that stream live depends on the wrapper's
-# own --verbose flag: with -v we tee to terminal+file, without -v we
-# redirect to file only. Either way, we grep $LOG_FILE for the
-# structured REGISTRATION_SUCCESS line that ui_pair emits.
+#   -v     -> tee to /dev/tty as it happens (and capture for parsing)
+#   no -v  -> capture only; on failure, dump captured output to stderr
 #
-# set +e so a non-zero rc from keyble.py doesn't kill us before we can
-# format the failure message.
+# Either way the stream lives only in shell memory and is gone when
+# the script exits. set +e so a non-zero rc from keyble.py doesn't
+# kill us before we can format the failure message.
 set +e
 if [[ $VERBOSE -eq 1 ]]; then
-    ./keyble.py --device "$LOCK_MAC" \
+    OUTPUT=$(./keyble.py --device "$LOCK_MAC" \
         --user-name "${USER_NAME:-unnamed}" \
         --qrdata "$QR_DATA" \
         --iface "$HCI_IFACE" \
         --connect-timeout 30 --timeout 90 \
-        --register --user-key "$NEW_USER_KEY" --verbose 2>&1 | tee "$LOG_FILE"
-    rc=${PIPESTATUS[0]}
+        --register --user-key "$NEW_USER_KEY" --verbose 2>&1 \
+        | tee /dev/tty; exit "${PIPESTATUS[0]}")
+    rc=$?
 else
-    ./keyble.py --device "$LOCK_MAC" \
+    OUTPUT=$(./keyble.py --device "$LOCK_MAC" \
         --user-name "${USER_NAME:-unnamed}" \
         --qrdata "$QR_DATA" \
         --iface "$HCI_IFACE" \
         --connect-timeout 30 --timeout 90 \
-        --register --user-key "$NEW_USER_KEY" --verbose >"$LOG_FILE" 2>&1
+        --register --user-key "$NEW_USER_KEY" --verbose 2>&1)
     rc=$?
 fi
 set -e
 
 # Look for the machine-readable summary line. ui_pair emits exactly:
 #     REGISTRATION_SUCCESS user_id=N user_key=HEX(32)
-SUCCESS_LINE=$(grep -E '^REGISTRATION_SUCCESS user_id=[0-9]+ user_key=[0-9a-fA-F]{32}$' \
-    "$LOG_FILE" | tail -1 || true)
+SUCCESS_LINE=$(printf '%s\n' "$OUTPUT" \
+    | grep -E '^REGISTRATION_SUCCESS user_id=[0-9]+ user_key=[0-9a-fA-F]{32}$' \
+    | tail -1 || true)
 
 if [[ -z "$SUCCESS_LINE" ]]; then
     echo >&2
     echo "Registration FAILED (keyble.py exit=$rc, no REGISTRATION_SUCCESS line)." >&2
-    echo "Full log: $LOG_FILE" >&2
+    if [[ $VERBOSE -eq 0 ]]; then
+        echo "--- captured keyblepy output (re-run with -v to see live) ---" >&2
+        printf '%s\n' "$OUTPUT" >&2
+        echo "-------------------------------------------------------------" >&2
+    fi
     echo "Common causes:" >&2
     echo "  - Lock not in pairing mode (orange LED must be blinking)" >&2
     echo "  - BLE adapter busy (another keyble.py / bot still running)" >&2
@@ -118,7 +132,5 @@ $BOT_DIR/.env
 
 Then restart the bot service, e.g.
     sudo systemctl restart deltabot-${BOT_NAME:-<bot>}.service
-
-Full log saved at: $LOG_FILE
 ============================================================
 EOF
