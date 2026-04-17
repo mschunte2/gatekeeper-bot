@@ -119,8 +119,8 @@ $EDITOR .env
 | `USER_KEY`        | 32 hex chars (16 bytes) -- your shared secret with the lock. Generate with `openssl rand -hex 16`. Keep private. |
 | `QR_DATA`         | The full QR string from the lock's setup card, format `M<12-hex-MAC>K<32-hex-card-key><10-char-serial>`. Only needed for `register-user.sh`. |
 | `USER_NAME`       | A label shown in the Eqiva mobile app for this user.                                                    |
-| `HCI_IFACE`       | HCI index: `0` for onboard, `1` for a USB dongle, etc.                                                  |
-| `SEC_LEVEL`       | `low` (unencrypted, works on any lock) or `medium` (LE-encrypted; requires a BlueZ bond -- see section 5). |
+| `ADAPTER_MAC`     | BD address of the BLE adapter to use (e.g. `8A:88:4B:C2:9C:B9` for a USB dongle). Resolved to `hciN` at runtime so HCI renumbering across reboots is harmless. Leave blank to default to the built-in UART adapter. Find yours with `hciconfig -a`. |
+| `SEC_LEVEL`       | `low` (unencrypted, works on any lock) or `medium` (LE-encrypted; requires a BlueZ bond -- see section 5). If the bond is lost, `send-command.sh` automatically retries with `low` and prints a warning. |
 | `CONNECT_TIMEOUT` | Seconds to wait for the BLE connection; `75` is a safe default.                                         |
 | `TIMEOUT`         | Overall wall-clock timeout per command. `90` default.                                                   |
 | `ALLOWED_CHATS`   | Comma-separated Delta Chat chat-ids that may operate the lock. Gates **both** text commands (`/lock`, `/unlock`, `/status`) **and** the webxdc app -- chats in this list automatically receive the app and may use either path. `/id` is the only command that bypasses this check (so you can discover chat ids during setup). Empty = nobody. See section 6. |
@@ -309,8 +309,42 @@ sudo systemctl enable --now deltabot
 ./send-command.sh open      # fully retracts (mode-dependent)
 ```
 
-Exit code: 0 on success, 1 on failure (timeout, MAC mismatch, lock
-unreachable). Error goes to stderr.
+Exit codes:
+
+| code | meaning |
+|------|---------|
+| 0    | success |
+| 2    | both attempts failed (lock unreachable or command rejected) |
+| 3    | BLE adapter busy (another operation in progress — try again) |
+| 4    | BLE adapter not found (dongle unplugged? wrong ADAPTER_MAC?) |
+
+`send-command.sh` is self-healing: it kills stale `bluepy-helper`
+processes, resets the HCI adapter, and stops any active bluetoothd
+scan before each attempt. If the first attempt fails (e.g. bond
+evicted after a battery swap), it automatically retries with
+`SEC_LEVEL=low` and prints a warning to stderr:
+
+```
+⚠ Bond may be lost — retrying without pairing (slow). Run pair-lock.sh to re-establish.
+```
+
+Concurrent callers are serialized via `flock` (one BLE operation at a
+time per adapter). A second caller while the first is in progress
+gets exit code 3 immediately.
+
+### 7.1.1 Re-establishing the BLE bond
+
+If `send-command.sh` reports a lost bond, run the interactive pairing
+guide:
+
+```bash
+./pair-lock.sh
+```
+
+It prompts you to put the lock in pairing mode (3-second button
+press, orange LED), scans for the lock, pairs and trusts it on the
+configured adapter, and verifies with a status probe. See README §5
+for background on bonding.
 
 ### 7.2 From Delta Chat
 
@@ -405,12 +439,13 @@ message already identifies them. The originating app id (`gatekeeper`
 or `quick-unlock`) is logged at INFO level for debugging but is not
 shown to chat members.
 
-#### Automatic retry
+#### Automatic retry and fallback
 
-A non-zero exit from `send-command.sh` (typical BLE-side transient --
-timeout, missed ACK) is retried once before the failure is reported.
-The chat sees a brief `(Hoftor: BLE retry…)` note while the retry is
-in progress; only the final attempt's output is echoed.
+`send-command.sh` handles retries internally: if the first attempt
+fails (configured `SEC_LEVEL`), it retries once with `SEC_LEVEL=low`
+(unbonded fallback). A warning is printed to stderr if the fallback
+is used. The bot relays stderr to the chat for text commands. See
+§7.1 for details and exit codes.
 
 ---
 
@@ -418,8 +453,11 @@ in progress; only the final attempt's output is echoed.
 
 | symptom                                                     | likely cause / fix                                                                                  |
 |-------------------------------------------------------------|-----------------------------------------------------------------------------------------------------|
-| `./send-command.sh status` takes ~45 s                      | No BLE bond. Complete section 5 for the fast path or accept the latency.                            |
-| `./send-command.sh status` takes >90 s, exits 1             | Lock out of range, bond evicted, or phone app currently connected. Move closer, re-bond, or wait.   |
+| `./send-command.sh status` takes ~45 s                      | No BLE bond (or bond evicted). Run `./pair-lock.sh` to re-establish (see §7.1.1).                   |
+| `./send-command.sh` exits with code 2                       | Both attempts failed. Lock out of range, phone app connected, or battery dead. Check and retry.     |
+| `./send-command.sh` exits with code 3                       | Another BLE operation in progress. Wait a moment and try again.                                     |
+| `./send-command.sh` exits with code 4                       | BLE adapter not found. Check `ADAPTER_MAC` in `.env` and that the dongle is plugged in.             |
+| `⚠ Bond may be lost` warning in chat                       | The bonded fast path failed; `send-command.sh` fell back to `SEC_LEVEL=low`. Run `./pair-lock.sh`.  |
 | Bot reacts with cross to every command                      | Message older than 30 s. Check network latency or clock skew on the Pi.                             |
 | Bot replies "permission denied"                             | Chat id not in `ALLOWED_CHATS`. Use `/id`, edit `.env`, restart the service.                        |
 | `MAC mismatch on received frame; dropping` in `--verbose`   | User-key mismatch between `.env` and the lock -- re-register or double-check the hex string.        |
@@ -475,7 +513,8 @@ gatekeeper-bot/
 |-- .env.example                 (template)
 |-- delta-door-bot.py            (DeltaChat listener)
 |-- start-gatekeeper-bot.sh      (service entrypoint)
-|-- send-command.sh              (one-shot CLI wrapper around keyblepy)
+|-- send-command.sh              (one-shot CLI wrapper around keyblepy, with retry + flock)
+|-- pair-lock.sh                 (interactive BLE bond guide -- run when bond is lost)
 |-- register-user.sh             (one-shot registration wrapper)
 |-- keyblepy/                    (Python KeyBLE implementation, submodule)
 |   \-- README.md                (protocol-level docs, Python API)

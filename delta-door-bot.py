@@ -266,7 +266,7 @@ def run_lock_command(
     None for text-driven ones (then no audit line is sent -- the user's
     own text message already names them).
 
-    Retries once on a non-zero exit (typical BLE transient).
+    Retries and SEC_LEVEL fallback are handled by send-command.sh.
     """
     global _last_known_state
 
@@ -281,24 +281,12 @@ def run_lock_command(
     if source_msgid is not None:
         bot.rpc.send_reaction(accid, source_msgid, ["⌛"])
 
-    def _run() -> subprocess.CompletedProcess:
-        return subprocess.run(
-            [SEND_COMMAND_SH, command],
-            encoding="utf-8",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-
-    proc = _run()
-    if proc.returncode != 0:
-        bot.logger.warning(
-            f"send-command.sh {command} rc={proc.returncode}; retrying once"
-        )
-        bot.rpc.send_msg(
-            accid, chatid,
-            MsgData(text=f"({DOOR_NAME}: BLE retry…)"),
-        )
-        proc = _run()
+    proc = subprocess.run(
+        [SEND_COMMAND_SH, command],
+        encoding="utf-8",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
 
     # Text path: echo raw subprocess output (existing behaviour).
     # App path: stay silent here -- the audit line below speaks for the
@@ -324,7 +312,7 @@ def run_lock_command(
     if proc.returncode != 0:
         new_state = "error"
         bot.logger.warning(
-            f"send-command.sh {command} rc={proc.returncode} after retry"
+            f"send-command.sh {command} rc={proc.returncode}"
         )
     else:
         new_state = parse_state_from_output(proc.stdout) or "unknown"
