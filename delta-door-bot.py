@@ -31,7 +31,11 @@ from appdirs import user_config_dir
 from deltachat2 import EventType, MsgData, events
 from deltabot_cli import BotCli
 
-cli = BotCli("gatekeeper")
+# BOT_NAME controls the BotCli identity (and therefore the Delta Chat
+# account storage dir and the app_msgids.json location). Two bots on
+# the same Pi MUST use different names so their state doesn't collide.
+BOT_NAME = (os.environ.get("BOT_NAME") or "").strip() or "gatekeeper"
+cli = BotCli(BOT_NAME)
 
 # ---------------------------------------------------------------- constants
 
@@ -98,7 +102,7 @@ DOOR_NAME = (os.environ.get("DOOR_NAME") or "").strip() or "Door"
 
 # ----------------------------------------------------- persistent state map
 
-STATE_DIR = Path(user_config_dir("gatekeeper"))
+STATE_DIR = Path(user_config_dir(BOT_NAME))
 APP_MSGIDS_PATH = STATE_DIR / "app_msgids.json"
 
 
