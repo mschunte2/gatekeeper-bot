@@ -442,7 +442,17 @@ text shows `Door: locking…` / `opening…` / `checking…`. The icon
 returns to the actual state when the bot's response arrives (or to
 `Door: timeout (no response)` after 60 s).
 
-#### Quick-Unlock (`apps/quick-unlock.xdc`)
+#### Quick-Unlock (`apps-disabled/quick-unlock.xdc` -- currently disabled)
+
+> **Disabled by default.** The .xdc lives in `apps-disabled/` rather
+> than `apps/`, so the bot's `apps/*.xdc` glob does not pick it up
+> and `/apps` will not deliver it. Reason: opening the app sends
+> `open` immediately on launch, with no confirmation -- judged too
+> easy to trigger accidentally (pocket-tap, shortcut misfire) for
+> day-to-day deployment. To re-enable, move the file back into
+> `apps/` (and revert the `outDir` in
+> `apps/quick-unlock/vite.config.mjs` so future rebuilds land in
+> the right place).
 
 Designed to pin to your phone's home screen. **Opening the app
 immediately sends `open`** to the bot -- one tap, door open. The
@@ -568,8 +578,9 @@ gatekeeper-bot/
 |   \-- README.md                (protocol-level docs, Python API)
 |-- apps/                        (webxdc apps -- sources + built artifacts)
 |   |-- gatekeeper.xdc           (built artifact, tracked)
-|   |-- quick-unlock.xdc         (built artifact, tracked)
 |   |-- quick-lock.xdc           (built artifact, tracked)
+|-- apps-disabled/               (built artifacts NOT served by /apps)
+|   \-- quick-unlock.xdc         (one-tap unlock, currently disabled)
 |   |-- gatekeeper/              (full lock-control app source)
 |   |   |-- index.html main.js main.css
 |   |   |-- vite.config.mjs package.json

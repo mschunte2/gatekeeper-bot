@@ -113,6 +113,15 @@ identifies them).
 `delta-door-bot.py` scans `apps/*.xdc` on each `/apps` call. No
 hard-coded list. Dropping a new `<id>.xdc` into `apps/` is enough.
 
+`apps-disabled/` exists for built artifacts that we deliberately do
+not serve (currently: `quick-unlock.xdc`, judged too easy to trigger
+accidentally on phone home-screens). The bot's glob never reaches
+that folder, so just moving an .xdc in/out of `apps/` toggles
+availability without code changes. The matching source dirs (e.g.
+`apps/quick-unlock/`) stay in `apps/` -- only the *built artifact*
+moves -- and their `vite.config.mjs` `outDir` should match the
+artifact's intended location.
+
 ## Protocol: bot ↔ webxdc apps
 
 All apps share one protocol. The `app` field is logged but does not
@@ -157,11 +166,12 @@ lib/common.sh              sourced helper: .env load, venv, adapter,
 .env.example               template
 apps/
   gatekeeper.xdc           built artifact (tracked)
-  quick-unlock.xdc         built artifact (tracked)
   quick-lock.xdc           built artifact (tracked)
   gatekeeper/              full lock-control app source
   quick-unlock/            one-tap unlock app source
   quick-lock/              one-tap lock app source
+apps-disabled/             built artifacts NOT served by /apps
+  quick-unlock.xdc         currently disabled (dangerous one-tap open)
 keyblepy/                  BLE protocol implementation (git submodule)
 systemd-unit/              service file
 ```
