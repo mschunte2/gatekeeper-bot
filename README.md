@@ -90,11 +90,20 @@ pip install bluepy transitions pycryptodome \
             deltachat2 deltabot-cli deltachat-rpc-server
 ```
 
-Optional: for the encrypted fast path you want a bluepy build that supports
-`connect(timeout=...)`. The PyPI 1.3.0 wheel works too -- keyblepy detects
-the missing parameter at runtime and falls back to the 3-arg signature
-(logging a warning in `--verbose` mode). If you want `--connect-timeout`
-honoured, install bluepy editable from a newer checkout:
+**On bluepy versions:** the off-the-shelf `bluepy 1.3.0` wheel from
+PyPI works for everything we need -- including registration and the
+encrypted fast path -- and is what the Pi deployment uses. We ran
+both flows end-to-end against an Eqiva eQ-3 SmartLock with the PyPI
+wheel and saw no functional difference vs a self-compiled bluepy
+from upstream master. **No source build is required.**
+
+The only caveat is that PyPI 1.3.0 lacks `connect(timeout=...)`; if
+you pass `--connect-timeout`, keyblepy detects the missing parameter
+at runtime, logs a warning in `--verbose` mode, and falls back to
+the 3-arg signature (the connect still happens; only the user-set
+timeout is ignored). If you specifically need `--connect-timeout`
+honoured at the BLE layer, install bluepy editable from a newer
+checkout:
 
 ```bash
 git clone https://github.com/IanHarvey/bluepy.git ../bluepy-src
