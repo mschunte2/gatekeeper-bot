@@ -72,8 +72,17 @@ resolve_adapter() {
         | grep -oE '([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}' \
         | head -1)
 
-    BLE_LOCK_FILE="/tmp/ble-hci${HCI_IFACE}.lock"
-    export HCI_IFACE ADAPTER_LABEL ADAPTER_BD BLE_LOCK_FILE
+    # Put the lock file inside a non-sticky subdirectory of /tmp.
+    # Modern Debian ships `fs.protected_regular=2`, which blocks
+    # open-for-write on files in sticky world-writable directories
+    # unless the opener is the file's owner -- so the bot's
+    # pi-owned lock in bare /tmp would shut root (e.g.
+    # `sudo pair-lock.sh`) out entirely. A non-sticky subdir lets
+    # both users share the rendezvous. The dir is recreated on
+    # every boot (tmpfs semantics on /tmp), so no cleanup is needed.
+    BLE_LOCK_DIR="/tmp/gatekeeper-ble"
+    BLE_LOCK_FILE="$BLE_LOCK_DIR/hci${HCI_IFACE}.lock"
+    export HCI_IFACE ADAPTER_LABEL ADAPTER_BD BLE_LOCK_DIR BLE_LOCK_FILE
 }
 
 # --- flock serialization ---------------------------------------------------
@@ -86,6 +95,14 @@ resolve_adapter() {
 # remove it once with `sudo rm /tmp/ble-hci*.lock` and rerun.
 
 _ensure_lock_file() {
+    # Create the per-host rendezvous dir on first use. Mode 0777 (no
+    # sticky bit) is deliberate -- see resolve_adapter() for why: the
+    # fs.protected_regular kernel check only blocks cross-user writes
+    # in sticky world-writable directories.
+    if [ ! -d "$BLE_LOCK_DIR" ]; then
+        mkdir -p "$BLE_LOCK_DIR" 2>/dev/null || true
+    fi
+    chmod 0777 "$BLE_LOCK_DIR" 2>/dev/null || true
     if [ ! -e "$BLE_LOCK_FILE" ]; then
         (umask 0; : > "$BLE_LOCK_FILE")
     fi

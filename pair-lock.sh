@@ -9,8 +9,12 @@
 #   - The lock must be put in pairing mode BEFORE running this script
 #     (press and hold the "open" button for 3 seconds until the LED
 #     turns orange). The pairing window lasts about 30 seconds.
-#   - The bot must not be operating the adapter. This script takes
-#     the same BLE flock as send-command.sh and exits 3 on collision.
+#
+# Running bot: this script stops the matching deltabot-<BOT_NAME>.service
+# around the bluetoothctl + pairing steps so there is no contention
+# with scheduled BLE commands, then restarts it on exit (even on
+# failure / interrupt, via an EXIT trap). If the unit isn't active
+# or doesn't exist, the stop/start dance is skipped.
 
 # Fail fast if not root -- the bot runs as `pi` now, so accidental
 # invocation without sudo is more likely than it used to be. Without
@@ -38,6 +42,37 @@ cd "$(dirname "$0")"
 source ./lib/common.sh
 
 load_env
+
+# If the matching bot service is currently running, stop it for the
+# duration of the pairing so we don't race it on the BLE adapter, and
+# make sure it comes back up no matter how this script exits (clean
+# exit, pairing failure, Ctrl-C). The unit name follows the new
+# deltabot-<BOT_NAME>.service convention produced by
+# install-systemd-unit.sh.
+SERVICE_NAME="deltabot-${BOT_NAME:-gatekeeper}"
+BOT_WAS_RUNNING=0
+_restart_bot_on_exit() {
+    if [ "$BOT_WAS_RUNNING" -eq 1 ]; then
+        echo ""
+        echo "Restarting $SERVICE_NAME..."
+        if ! systemctl start "$SERVICE_NAME.service"; then
+            echo "WARNING: failed to restart $SERVICE_NAME -- start it manually" >&2
+        fi
+    fi
+}
+if systemctl is-active --quiet "$SERVICE_NAME.service" 2>/dev/null; then
+    echo "Stopping $SERVICE_NAME for the duration of pairing..."
+    # Install the trap BEFORE the stop so that if stop fails and we
+    # exit, we don't try to restart a service we never successfully
+    # stopped (BOT_WAS_RUNNING stays 0 in that case).
+    trap _restart_bot_on_exit EXIT
+    if ! systemctl stop "$SERVICE_NAME.service"; then
+        echo "ERROR: failed to stop $SERVICE_NAME; aborting pairing." >&2
+        exit 1
+    fi
+    BOT_WAS_RUNNING=1
+fi
+
 resolve_adapter
 acquire_ble_lock
 
