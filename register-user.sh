@@ -17,6 +17,28 @@
 # running this while the bot is active exits 3 rather than colliding
 # at the BLE layer.
 set -e
+
+# --- arg parsing -----------------------------------------------------------
+VERBOSE=0
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") [-v|--verbose] [-h|--help]
+
+  -v, --verbose   Stream keyblepy's debug output to the terminal as well
+                  as the log file. Without this flag, only the framed
+                  success/failure summary is shown; the full log is
+                  always captured to /tmp/keyble-register.*.log.
+  -h, --help      Show this help.
+EOF
+}
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -v|--verbose) VERBOSE=1; shift ;;
+        -h|--help)    usage; exit 0 ;;
+        *)            echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
+    esac
+done
+
 cd "$(dirname "$0")"
 BOT_DIR=$(pwd)
 # shellcheck disable=SC1091
@@ -32,18 +54,36 @@ LOG_FILE=$(mktemp -t keyble-register.XXXXXX.log)
 echo "Logging full keyblepy output to: $LOG_FILE" >&2
 
 cd keyblepy
-# `tee` so verbose output is preserved AND we can grep stdout for the
-# structured REGISTRATION_SUCCESS line that ui_pair emits. set +e so
-# a non-zero rc from keyble.py doesn't kill us before we can format
-# the failure message.
+# We always pass --verbose to keyble.py and always capture the full
+# stream into $LOG_FILE -- that way the log on disk is complete
+# regardless of how the script was invoked, and post-mortem debugging
+# of a failure never needs the user to "run it again with -v".
+#
+# Whether the user *sees* that stream live depends on the wrapper's
+# own --verbose flag: with -v we tee to terminal+file, without -v we
+# redirect to file only. Either way, we grep $LOG_FILE for the
+# structured REGISTRATION_SUCCESS line that ui_pair emits.
+#
+# set +e so a non-zero rc from keyble.py doesn't kill us before we can
+# format the failure message.
 set +e
-./keyble.py --device "$LOCK_MAC" \
-    --user-name "${USER_NAME:-unnamed}" \
-    --qrdata "$QR_DATA" \
-    --iface "$HCI_IFACE" \
-    --connect-timeout 30 --timeout 90 \
-    --register --user-key "$NEW_USER_KEY" --verbose 2>&1 | tee "$LOG_FILE"
-rc=${PIPESTATUS[0]}
+if [[ $VERBOSE -eq 1 ]]; then
+    ./keyble.py --device "$LOCK_MAC" \
+        --user-name "${USER_NAME:-unnamed}" \
+        --qrdata "$QR_DATA" \
+        --iface "$HCI_IFACE" \
+        --connect-timeout 30 --timeout 90 \
+        --register --user-key "$NEW_USER_KEY" --verbose 2>&1 | tee "$LOG_FILE"
+    rc=${PIPESTATUS[0]}
+else
+    ./keyble.py --device "$LOCK_MAC" \
+        --user-name "${USER_NAME:-unnamed}" \
+        --qrdata "$QR_DATA" \
+        --iface "$HCI_IFACE" \
+        --connect-timeout 30 --timeout 90 \
+        --register --user-key "$NEW_USER_KEY" --verbose >"$LOG_FILE" 2>&1
+    rc=$?
+fi
 set -e
 
 # Look for the machine-readable summary line. ui_pair emits exactly:
