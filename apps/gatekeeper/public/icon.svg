@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="sky" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0%" stop-color="#cbe5ff"/>
+      <stop offset="100%" stop-color="#eaf2fb"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" fill="url(#sky)"/>
+  <rect x="0" y="220" width="256" height="36" fill="#7fb068"/>
+
+  <!-- chimney + smoke -->
+  <rect x="170" y="50" width="20" height="55" fill="#8b5a2b" stroke="#4a3018" stroke-width="2"/>
+  <rect x="166" y="44" width="28" height="10" fill="#5a3a1a" stroke="#3a2010" stroke-width="2"/>
+  <circle cx="180" cy="36" r="6" fill="#dadada" opacity="0.6"/>
+  <circle cx="190" cy="22" r="7" fill="#dadada" opacity="0.5"/>
+
+  <!-- roof -->
+  <polygon points="128,28 24,130 232,130" fill="#c0492b" stroke="#7a2c19" stroke-width="3"/>
+
+  <!-- walls -->
+  <rect x="48" y="128" width="160" height="100" fill="#f5e2b5" stroke="#9c6b3c" stroke-width="3"/>
+
+  <!-- door -->
+  <rect x="106" y="160" width="44" height="68" fill="#7a4a25" stroke="#3a2010" stroke-width="3"/>
+  <circle cx="142" cy="195" r="3" fill="#f5d050"/>
+
+  <!-- left window -->
+  <rect x="60" y="148" width="36" height="36" fill="#a8d1f5" stroke="#3a3a3a" stroke-width="2"/>
+  <line x1="78" y1="148" x2="78" y2="184" stroke="#3a3a3a" stroke-width="2"/>
+  <line x1="60" y1="166" x2="96" y2="166" stroke="#3a3a3a" stroke-width="2"/>
+
+  <!-- right window -->
+  <rect x="160" y="148" width="36" height="36" fill="#a8d1f5" stroke="#3a3a3a" stroke-width="2"/>
+  <line x1="178" y1="148" x2="178" y2="184" stroke="#3a3a3a" stroke-width="2"/>
+  <line x1="160" y1="166" x2="196" y2="166" stroke="#3a3a3a" stroke-width="2"/>
+
+  <!-- small lock badge above door (visual cue) -->
+  <rect x="118" y="172" width="20" height="14" rx="2" fill="#f5d050" stroke="#aa8000" stroke-width="1.5"/>
+  <path d="M122 172 V168 a6 6 0 0 1 12 0 V172" fill="none" stroke="#aa8000" stroke-width="1.5"/>
+</svg>

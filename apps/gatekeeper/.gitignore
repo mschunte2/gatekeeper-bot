@@ -1,0 +1,13 @@
+# Logs
+pnpm-debug.log*
+.pnpm-debug.log
+pnpm-lock.yaml
+
+node_modules
+dist
+
+# Editor directories and files
+.vscode/*
+.idea
+.DS_Store
+*~

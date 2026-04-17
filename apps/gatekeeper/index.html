@@ -1,0 +1,75 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="./main.css" />
+    <script src="webxdc.js"></script>
+    <title>Lock</title>
+  </head>
+  <body>
+    <h1 id="doorName"></h1>
+
+    <div class="scene">
+      <svg class="house" viewBox="0 0 300 270" aria-hidden="true">
+        <defs>
+          <linearGradient id="sky" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stop-color="#cbe5ff" />
+            <stop offset="100%" stop-color="#eaf2fb" />
+          </linearGradient>
+        </defs>
+        <rect width="300" height="270" fill="url(#sky)" />
+        <rect x="0" y="245" width="300" height="25" fill="#7fb068" />
+
+        <!-- chimney + smoke -->
+        <rect x="180" y="50" width="22" height="60" fill="#8b5a2b" stroke="#4a3018" stroke-width="2" />
+        <rect x="175" y="44" width="32" height="10" fill="#5a3a1a" stroke="#3a2010" stroke-width="2" />
+        <circle cx="195" cy="32" r="6" fill="#d8d8d8" opacity="0.6" />
+        <circle cx="205" cy="18" r="8" fill="#d8d8d8" opacity="0.5" />
+
+        <!-- roof -->
+        <polygon points="150,28 30,140 270,140" fill="#c0492b" stroke="#7a2c19" stroke-width="2.5" />
+
+        <!-- walls -->
+        <rect x="55" y="138" width="190" height="115" fill="#f5e2b5" stroke="#9c6b3c" stroke-width="2.5" />
+
+        <!-- left window -->
+        <rect x="65" y="180" width="36" height="36" fill="#a8d1f5" stroke="#3a3a3a" stroke-width="2" />
+        <line x1="83" y1="180" x2="83" y2="216" stroke="#3a3a3a" stroke-width="2" />
+        <line x1="65" y1="198" x2="101" y2="198" stroke="#3a3a3a" stroke-width="2" />
+
+        <!-- right window -->
+        <rect x="199" y="180" width="36" height="36" fill="#a8d1f5" stroke="#3a3a3a" stroke-width="2" />
+        <line x1="217" y1="180" x2="217" y2="216" stroke="#3a3a3a" stroke-width="2" />
+        <line x1="199" y1="198" x2="235" y2="198" stroke="#3a3a3a" stroke-width="2" />
+      </svg>
+
+      <button id="lockBtn" class="round-btn lock-pos" aria-label="Lock">
+        <svg viewBox="0 0 24 24">
+          <path
+            d="M12 1a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-9a2 2 0 0 0-2-2h-1V6a5 5 0 0 0-5-5Zm-3 8V6a3 3 0 1 1 6 0v3H9Zm3 5a1.5 1.5 0 0 0-.5 2.91V19h1v-2.09A1.5 1.5 0 0 0 12 14Z"
+          />
+        </svg>
+      </button>
+
+      <button id="unlockBtn" class="round-btn unlock-pos" aria-label="Unlock">
+        <svg viewBox="0 0 24 24">
+          <path
+            d="M12 1a5 5 0 0 0-5 5 1 1 0 1 0 2 0 3 3 0 1 1 6 0v3H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-9a2 2 0 0 0-2-2h-1V6a5 5 0 0 0-5-5Zm0 13a1.5 1.5 0 0 0-.5 2.91V19h1v-2.09A1.5 1.5 0 0 0 12 14Z"
+          />
+        </svg>
+      </button>
+
+      <button id="doorBtn" class="round-btn door-pos" aria-label="Open">
+        <svg id="doorIcon" viewBox="0 0 24 24"></svg>
+      </button>
+    </div>
+
+    <p id="status" class="status">
+      <span class="dot"></span><span id="statusText">Door state: unknown</span>
+    </p>
+    <p><em><small id="deviceName"></small></em></p>
+
+    <script src="./main.js" type="module"></script>
+  </body>
+</html>

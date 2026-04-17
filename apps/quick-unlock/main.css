@@ -1,0 +1,58 @@
+body {
+  font-family: system-ui, sans-serif;
+  text-align: center;
+  margin: 0;
+  padding: 1rem;
+  color: #333;
+  background: #fafafa;
+}
+
+h1 {
+  font-weight: 400;
+  margin: 0.5rem 0 1rem;
+}
+
+.slider {
+  display: block;
+  width: 90vw;
+  max-width: 480px;
+  margin: 0.5rem auto 1.5rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  border-radius: 1rem;
+  transition:
+    filter 0.2s,
+    transform 0.05s;
+}
+.slider:hover { filter: brightness(1.05); }
+.slider:active { transform: scale(0.97); }
+.slider img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 1rem;
+}
+
+/* Transitional 'opening' state: orange pulse to communicate "in progress". */
+.slider.opening {
+  animation: slider-pulse 1.4s ease-in-out infinite;
+}
+@keyframes slider-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(249, 115, 22, 0.55); }
+  50% { box-shadow: 0 0 0 14px rgba(249, 115, 22, 0); }
+}
+
+.status {
+  display: inline-block;
+  padding: 0.5rem 1rem;
+  border-radius: 1rem;
+  background: #eef0f1;
+  font-size: 1rem;
+  margin-top: 0.5rem;
+}
+/* User-facing colour semantics: green=open, red=closed, orange=opening. */
+.status.open    { background: #e6f4ea; color: #1e6f24; }
+.status.closed  { background: #fdecea; color: #8b1f1f; }
+.status.opening { background: #fff3e0; color: #7a3500; }

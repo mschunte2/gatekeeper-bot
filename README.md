@@ -1,26 +1,49 @@
 # gatekeeper-bot
 
 *Based on [missytake/doorbot](https://git.0x90.space/missytake/doorbot) -- thanks to missytake for the Delta Chat bot skeleton.*
+*Webxdc app reuses the layout from [deltachat-bot/webxdcbot](https://github.com/deltachat-bot/webxdcbot).*
 
 A Raspberry Pi-hosted bridge that operates an **eQ-3 Eqiva Smart Lock** from
 chat. A small Python daemon (`delta-door-bot.py`) listens on a
-[Delta Chat](https://delta.chat/) account; when an authorised chat sends
-`/lock` / `/unlock` / `/status`, the daemon shells out to `send-command.sh`,
-which in turn calls [`keyblepy`](./keyblepy/) over BLE.
+[Delta Chat](https://delta.chat/) account. Three control surfaces share
+one backend:
+
+- **Text commands** -- send `/lock` / `/unlock` / `/status` from an
+  allowed chat. Original behaviour, preserved verbatim.
+- **Gatekeeper webxdc app** -- full lock control inside the chat:
+  closed-lock / open-lock / door buttons, live status icon. Tagged
+  internally as `app: "gatekeeper"`.
+- **Quick-Unlock webxdc app** -- one-tap door opener: opening the app
+  immediately requests `open`. Pin it to your phone's home screen for
+  one-click entry. Tagged internally as `app: "quick-unlock"`.
+- **Quick-Lock webxdc app** -- one-tap door closer: opening the app
+  immediately requests `lock`. No open direction, by design (priority
+  is "after touching this app the lock is closed"). Tap to retry if
+  the lock didn't engage. Tagged internally as `app: "quick-lock"`.
+
+All three apps speak the same protocol; the bot doesn't behave
+differently per app (the `app` tag is only logged for debugging).
+
+All paths converge on `send-command.sh`, which calls
+[`keyblepy`](./keyblepy/) over BLE. State pushes flow back from the
+bot to every active app instance whenever the lock changes -- whether
+the change came from an app, a text command, or another allowed chat.
 
 ```
-   your phone  -- Delta Chat -->  delta-door-bot.py  -->  send-command.sh
-                                         |                       |
-                                         |             keyblepy (Python) -- BlueZ -- Pi BLE --+
-                                         v                                                    |
-                                systemd service                                               |
-                                  (deltabot)                                                  v
-                                                                                      Eqiva Smart Lock
+   your phone -- Delta Chat -+--> delta-door-bot.py --> send-command.sh
+                             |          |                     |
+   webxdc apps (in chat) ----+          |          keyblepy -- BlueZ -- Pi BLE --+
+                                        v                                        |
+                              systemd (deltabot)                                 v
+                                                                          Eqiva Smart Lock
 ```
 
 All runtime configuration and secrets live in a single `.env` file at the
 repo root (see `.env.example`). Scripts source `.env` on startup;
-`delta-door-bot.py` reads env vars via `os.environ`.
+`delta-door-bot.py` reads env vars via `os.environ`. The webxdc apps
+are built into `apps/<id>.xdc` (tracked artifacts -- see
+[Building the apps](#11-building-the-webxdc-apps)). The bot
+auto-discovers them on each `/apps` call.
 
 ---
 
@@ -96,11 +119,12 @@ $EDITOR .env
 | `USER_KEY`        | 32 hex chars (16 bytes) -- your shared secret with the lock. Generate with `openssl rand -hex 16`. Keep private. |
 | `QR_DATA`         | The full QR string from the lock's setup card, format `M<12-hex-MAC>K<32-hex-card-key><10-char-serial>`. Only needed for `register-user.sh`. |
 | `USER_NAME`       | A label shown in the Eqiva mobile app for this user.                                                    |
-| `HCI_IFACE`       | HCI index: `0` for onboard, `1` for a USB dongle, etc.                                                  |
-| `SEC_LEVEL`       | `low` (unencrypted, works on any lock) or `medium` (LE-encrypted; requires a BlueZ bond -- see section 5). |
+| `ADAPTER_MAC`     | BD address of the BLE adapter to use (e.g. `8A:88:4B:C2:9C:B9` for a USB dongle). Resolved to `hciN` at runtime so HCI renumbering across reboots is harmless. Leave blank to default to the built-in UART adapter. Find yours with `hciconfig -a`. |
+| `SEC_LEVEL`       | `low` (unencrypted, works on any lock) or `medium` (LE-encrypted; requires a BlueZ bond -- see section 5). If the bond is lost, `send-command.sh` automatically retries with `low` and prints a warning. |
 | `CONNECT_TIMEOUT` | Seconds to wait for the BLE connection; `75` is a safe default.                                         |
 | `TIMEOUT`         | Overall wall-clock timeout per command. `90` default.                                                   |
-| `ALLOWED_CHATS`   | Comma-separated Delta Chat chat-ids that may invoke `/lock` / `/unlock`. Empty = nobody. See section 6. |
+| `ALLOWED_CHATS`   | Comma-separated Delta Chat chat-ids that may operate the lock. Gates **both** text commands (`/lock`, `/unlock`, `/status`) **and** the webxdc app -- chats in this list automatically receive the app and may use either path. `/id` is the only command that bypasses this check (so you can discover chat ids during setup). Empty = nobody. See section 6. |
+| `DOOR_NAME`       | Display name shown as the heading inside the webxdc app (e.g. `"Front Gate"`). Pushed silently to every active app instance on startup. Default: `Door`. |
 | `HELP_MESSAGE`    | Optional override for the bot's help text (multi-line supported). Empty = a sensible English default. Put your contact info / localized aliases / extra commands here. |
 
 ---
@@ -285,8 +309,42 @@ sudo systemctl enable --now deltabot
 ./send-command.sh open      # fully retracts (mode-dependent)
 ```
 
-Exit code: 0 on success, 1 on failure (timeout, MAC mismatch, lock
-unreachable). Error goes to stderr.
+Exit codes:
+
+| code | meaning |
+|------|---------|
+| 0    | success |
+| 2    | both attempts failed (lock unreachable or command rejected) |
+| 3    | BLE adapter busy (another operation in progress — try again) |
+| 4    | BLE adapter not found (dongle unplugged? wrong ADAPTER_MAC?) |
+
+`send-command.sh` is self-healing: it kills stale `bluepy-helper`
+processes, resets the HCI adapter, and stops any active bluetoothd
+scan before each attempt. If the first attempt fails (e.g. bond
+evicted after a battery swap), it automatically retries with
+`SEC_LEVEL=low` and prints a warning to stderr:
+
+```
+⚠ Bond may be lost — retrying without pairing (slow). Run pair-lock.sh to re-establish.
+```
+
+Concurrent callers are serialized via `flock` (one BLE operation at a
+time per adapter). A second caller while the first is in progress
+gets exit code 3 immediately.
+
+### 7.1.1 Re-establishing the BLE bond
+
+If `send-command.sh` reports a lost bond, run the interactive pairing
+guide:
+
+```bash
+./pair-lock.sh
+```
+
+It prompts you to put the lock in pairing mode (3-second button
+press, orange LED), scans for the lock, pairs and trusts it on the
+configured adapter, and verifies with a status probe. See README §5
+for background on bonding.
 
 ### 7.2 From Delta Chat
 
@@ -304,16 +362,90 @@ unreachable). Error goes to stderr.
 
 4. From the allowed chat:
 
-   | command             | effect                             |
-   |---------------------|------------------------------------|
-   | `/status`           | current lock state                 |
-   | `/lock` / `/zu`     | engage the bolt                    |
-   | `/unlock` / `/auf`  | retract the bolt                   |
-   | `/id`               | show this chat's id (always works) |
-   | anything else       | help text                          |
+   | command             | effect                                            |
+   |---------------------|---------------------------------------------------|
+   | `/status`           | current lock state                                |
+   | `/lock` / `/zu`     | engage the bolt                                   |
+   | `/unlock` / `/auf`  | retract the bolt                                  |
+   | `/apps`             | (re)send all webxdc apps (Gatekeeper + Quick-Unlock) |
+   | `/id`               | show this chat's id (always works, no permission) |
+   | anything else       | help text                                         |
 
    Reactions: hourglass on receipt, checkmark on completion, cross if the
    message is older than 30 s (replay-protection).
+
+### 7.3 From the webxdc apps
+
+`/apps` drops two apps in the chat:
+
+#### Gatekeeper (`apps/gatekeeper.xdc`)
+
+Full lock control. Tap the app message; three buttons appear over a
+small colourful house drawing:
+
+| button         | sends to bot   | runs                       |
+|----------------|----------------|----------------------------|
+| closed-lock    | `lock`         | `send-command.sh lock`     |
+| open-lock      | `open`         | `send-command.sh open`     |
+| door (centre)  | `status`       | `send-command.sh status`   |
+
+While a command is pending the door button glows yellow and the status
+text shows `Door: locking…` / `opening…` / `checking…`. The icon
+returns to the actual state when the bot's response arrives (or to
+`Door: timeout (no response)` after 60 s).
+
+#### Quick-Unlock (`apps/quick-unlock.xdc`)
+
+Designed to pin to your phone's home screen. **Opening the app
+immediately sends `open`** to the bot -- one tap, door open. The
+slider stays on red ("Closed", starting frame) until the bot acks
+the request, then transitions through orange ("Opening…") to green
+("Open"). Tap the green slider to lock again (green → orange → red);
+tap red to open again. The chat-message preview icon is the green
+"Open" image (the target state for this app).
+
+#### Quick-Lock (`apps/quick-lock.xdc`)
+
+Mirror of Quick-Unlock with the priority "after touching this app the
+lock is closed". **Opening the app immediately sends `lock`**. Visual
+goes from green ("Open") through orange ("Closing…") to red
+("Closed"). There is no open direction here -- a tap on a
+non-closed slider only retries the lock command. The chat-message
+preview icon is the red "Closed" image (the target state).
+
+#### State updates
+
+The status icons / labels in both apps update from silent webxdc
+status messages the bot pushes back -- so every member of every allowed
+chat sees the same current lock state in real time. The app heading
+shows `DOOR_NAME` from `.env`. The bot pushes that name to each app on
+delivery; clients see it once they open the app.
+
+#### Audit trail
+
+Every state-changing app command produces a single concise chat line
+`{icon} {DOOR_NAME} {actor}` in the originating chat:
+
+```
+🔓 Hoftor Matthias       (opened)
+🔒 Hoftor Matthias       (locked)
+❌ Hoftor Matthias (lock failed)
+```
+
+`status` requests don't produce an audit line (read-only; the apps
+auto-request it on open / refresh). Text-driven commands keep their
+original output (`device locked` etc.) -- the user's own `/lock`
+message already identifies them. The originating app id (`gatekeeper`
+or `quick-unlock`) is logged at INFO level for debugging but is not
+shown to chat members.
+
+#### Automatic retry and fallback
+
+`send-command.sh` handles retries internally: if the first attempt
+fails (configured `SEC_LEVEL`), it retries once with `SEC_LEVEL=low`
+(unbonded fallback). A warning is printed to stderr if the fallback
+is used. The bot relays stderr to the chat for text commands. See
+§7.1 for details and exit codes.
 
 ---
 
@@ -321,14 +453,19 @@ unreachable). Error goes to stderr.
 
 | symptom                                                     | likely cause / fix                                                                                  |
 |-------------------------------------------------------------|-----------------------------------------------------------------------------------------------------|
-| `./send-command.sh status` takes ~45 s                      | No BLE bond. Complete section 5 for the fast path or accept the latency.                            |
-| `./send-command.sh status` takes >90 s, exits 1             | Lock out of range, bond evicted, or phone app currently connected. Move closer, re-bond, or wait.   |
+| `./send-command.sh status` takes ~45 s                      | No BLE bond (or bond evicted). Run `./pair-lock.sh` to re-establish (see §7.1.1).                   |
+| `./send-command.sh` exits with code 2                       | Both attempts failed. Lock out of range, phone app connected, or battery dead. Check and retry.     |
+| `./send-command.sh` exits with code 3                       | Another BLE operation in progress. Wait a moment and try again.                                     |
+| `./send-command.sh` exits with code 4                       | BLE adapter not found. Check `ADAPTER_MAC` in `.env` and that the dongle is plugged in.             |
+| `⚠ Bond may be lost` warning in chat                       | The bonded fast path failed; `send-command.sh` fell back to `SEC_LEVEL=low`. Run `./pair-lock.sh`.  |
 | Bot reacts with cross to every command                      | Message older than 30 s. Check network latency or clock skew on the Pi.                             |
 | Bot replies "permission denied"                             | Chat id not in `ALLOWED_CHATS`. Use `/id`, edit `.env`, restart the service.                        |
 | `MAC mismatch on received frame; dropping` in `--verbose`   | User-key mismatch between `.env` and the lock -- re-register or double-check the hex string.        |
 | `Failed to connect to peripheral ... addr type: public`     | Lock-side issue: someone else is connected, or the lock is advertising slowly. Retry.               |
 | After reboot, `hci0` is DOWN                                | `sudo systemctl enable hciuart` (section 2.1). Or `sudo hciconfig hci0 up`.                         |
 | DeltaChat replies delayed by minutes                        | SMTP rate-limit on the account's provider. Check `journalctl -u deltabot` for `rate-limited until`. |
+| App icon stays "Unknown" after restart                      | Bot couldn't reach the lock to seed the state. Check `journalctl -u deltabot` for the startup `status probe` line; tap the door button (sends `status`) to retry on demand. |
+| App buttons do nothing                                      | Chat not in `ALLOWED_CHATS`, or the bot can't see your webxdc status updates. Check `journalctl -u deltabot` for `app cmd from chat N` lines. |
 
 ---
 
@@ -343,10 +480,27 @@ unreachable). Error goes to stderr.
   `register-user.sh` as high-value.
 - The DeltaChat account credentials live in `~/.config/gatekeeper/`. That
   directory is protected only by filesystem permissions on the Pi.
-- Only chats listed in `ALLOWED_CHATS` can trigger `/lock`/`/unlock`. Chat
-  ids are private per your Delta Chat account but treat them as
+- Only chats listed in `ALLOWED_CHATS` can trigger lock operations.
+  This single allow-list gates **both** text commands (`/lock`,
+  `/unlock`, `/status`, `/app`) and the webxdc app: chats in this list
+  automatically receive the app and any chat member can tap its
+  buttons. `/id` is the only command that bypasses the check (so you
+  can discover chat ids during setup).
+- Chat ids are private per your Delta Chat account but treat them as
   low-sensitivity -- anyone who learns an allowed id and can send messages
   to your bot account can operate the lock.
+- The bot whitelists the four lock-operation tokens (`lock`, `unlock`,
+  `open`, `status`) before passing them to `send-command.sh`. The
+  webxdc payload's `text` field is matched against this whitelist;
+  anything else is logged and dropped, so a malicious app payload can't
+  inject arbitrary shell arguments.
+- Webxdc status updates the bot pushes back to apps use empty `info`,
+  so the Delta Chat client renders them silently. They are still
+  visible to every member of the chat (the app screen reflects them) --
+  do not rely on them as a private channel.
+- App-instance ids cached in `~/.config/gatekeeper/app_msgids.json`
+  reveal which chats currently host the app but contain no
+  credentials.
 
 ---
 
@@ -359,14 +513,103 @@ gatekeeper-bot/
 |-- .env.example                 (template)
 |-- delta-door-bot.py            (DeltaChat listener)
 |-- start-gatekeeper-bot.sh      (service entrypoint)
-|-- send-command.sh              (one-shot CLI wrapper around keyblepy)
+|-- send-command.sh              (one-shot CLI wrapper around keyblepy, with retry + flock)
+|-- pair-lock.sh                 (interactive BLE bond guide -- run when bond is lost)
 |-- register-user.sh             (one-shot registration wrapper)
 |-- keyblepy/                    (Python KeyBLE implementation, submodule)
 |   \-- README.md                (protocol-level docs, Python API)
+|-- apps/                        (webxdc apps -- sources + built artifacts)
+|   |-- gatekeeper.xdc           (built artifact, tracked)
+|   |-- quick-unlock.xdc         (built artifact, tracked)
+|   |-- quick-lock.xdc           (built artifact, tracked)
+|   |-- gatekeeper/              (full lock-control app source)
+|   |   |-- index.html main.js main.css
+|   |   |-- vite.config.mjs package.json
+|   |   \-- public/              (icon, manifest)
+|   |-- quick-unlock/            (one-tap-unlock app source)
+|   |   |-- index.html main.js main.css
+|   |   |-- vite.config.mjs package.json
+|   |   \-- public/              (slider images, icon, manifest)
+|   \-- quick-lock/              (one-tap-lock app source -- inverse of quick-unlock)
+|       |-- index.html main.js main.css
+|       |-- vite.config.mjs package.json
+|       \-- public/              (slider images, icon, manifest)
 |-- systemd-unit/
 |   \-- deltabot.service         (sudo cp to /etc/systemd/system/)
 \-- venv/                        (Python venv, gitignored)
 ```
 
+Per-deployment state (gitignored, lives outside this tree):
+
+- `~/.config/gatekeeper/`         -- Delta Chat account database (root user when
+  the bot runs under the bundled systemd unit)
+- `~/.config/gatekeeper/app_msgids.json`  -- chat-id -> [msgid, …] map the
+  bot uses to push silent state updates to existing app instances
+  (atomic write; safe to delete -- next `/apps` will reseed it).
+
 For a deeper dive into the BLE protocol, encryption layout, and the bugs
 that got fixed in keyblepy, see [`keyblepy/README.md`](./keyblepy/README.md).
+
+---
+
+## 11. Building the webxdc apps
+
+You only need to rebuild if you change something under `apps/gatekeeper/`
+or `apps/quick-unlock/`. The repo ships pre-built `apps/gatekeeper.xdc`
+and `apps/quick-unlock.xdc` so a fresh deploy doesn't require Node.js.
+
+### 11.1 Prerequisites
+
+- Node.js 18+ and `npm` (only on the build machine -- not needed on
+  the Pi if the `.xdc` artifacts are already committed).
+
+### 11.2 Build
+
+```bash
+cd apps/gatekeeper
+npm install      # one-time
+npm run build    # writes ../gatekeeper.xdc
+
+cd ../quick-unlock
+npm install      # one-time
+npm run build    # writes ../quick-unlock.xdc
+
+cd ../quick-lock
+npm install      # one-time
+npm run build    # writes ../quick-lock.xdc
+```
+
+Each `vite.config.mjs` writes the bundled `.xdc` one level up, into
+`apps/`, replacing the existing artifact.
+
+### 11.3 What the apps share
+
+- Both send the same protocol to the bot:
+  `{request: {name, text: "lock"|"open"|"status", app: "<id>"}}`.
+  The bot whitelists `text` against `{lock, unlock, open, status}` and
+  uses `app` only for log lines.
+- Both listen for two payload types from the bot:
+  - `{response: {text: "locked"|"unlocked"|"unknown"|"error"}}`
+    -- updates the visual state.
+  - `{config: {door_name: "..."}}` -- sets the heading. Pushed when an
+    app is sent (`/apps`), opportunistically when the bot first sees
+    an unknown msgid, and on bot startup for every known instance.
+- All bot-side state updates use empty `info` so they're silent in the
+  chat.
+
+After rebuilding any app, commit the updated `.xdc` so deploys can
+skip the Node toolchain.
+
+### 11.4 Adding a new app
+
+The bot discovers apps by scanning `apps/*.xdc` -- there is no
+hard-coded list. To add a new app:
+
+1. Create `apps/<id>/` with its own `vite.config.mjs` (point
+   `outDir: "../"` and `outFileName: "<id>.xdc"`).
+2. Implement the same protocol: send `{request: {name, text, app: "<id>"}}`,
+   listen for `{response}`, `{config}`, optionally `{ack}`.
+3. `npm install && npm run build`. The resulting `apps/<id>.xdc` is
+   picked up automatically the next time `/apps` runs (no bot
+   restart needed if the file appears between two `/apps` calls;
+   for new chats the bot also picks it up at startup).
