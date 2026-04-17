@@ -61,11 +61,18 @@ shell; supports the two-bot-one-adapter scenario without the bots
 knowing about each other.
 
 ### flock serialization
-`send-command.sh` uses `flock -n` (non-blocking) on
-`/tmp/ble-hci${HCI_IFACE}.lock`. Only one BLE operation at a time per
-adapter. Concurrent callers get exit code 3 ("busy") immediately. The
-lock file is per-adapter (not per-bot) so two bots sharing one adapter
-serialize correctly.
+All three BLE shell scripts (`send-command.sh`, `pair-lock.sh`,
+`register-user.sh`) acquire the same `flock -n` (non-blocking) on
+`/tmp/ble-hci${HCI_IFACE}.lock` via `acquire_ble_lock` from
+`lib/common.sh`. Only one BLE operation at a time per adapter.
+Concurrent callers get exit code 3 ("busy") immediately with a
+message pointing at the likely culprit (the bot). The lock file is
+per-adapter (not per-bot) so two bots sharing one adapter serialize
+correctly; it is created mode 0666 so any user with shell access to
+the script can acquire it (e.g. bot as `pi`, manual `sudo
+send-command.sh` for recovery). `pair-lock.sh` calls `release_ble_lock`
+before invoking its verification `./send-command.sh status` so the
+child can take the same flock.
 
 ### Webxdc replay protection gap (accepted)
 Text commands have a 30 s `msg.timestamp` age check. Webxdc status
@@ -144,6 +151,8 @@ send-command.sh            BLE wrapper (flock, adapter resolution, retry)
 pair-lock.sh               interactive BLE bond guide
 register-user.sh           one-time lock registration
 start-gatekeeper-bot.sh    systemd entrypoint (sources .env, activates venv)
+lib/common.sh              sourced helper: .env load, venv, adapter,
+                           flock, cleanup (shared by the 3 BLE scripts)
 .env                       secrets + config (gitignored)
 .env.example               template
 apps/

@@ -2,19 +2,23 @@
 # Issue a single command (status|lock|unlock|open) to the lock.
 # All knobs come from .env; see .env.example.
 #
-# Robustness:
-#   - Adapter resolution: ADAPTER_MAC -> hciN at runtime (stable across
-#     reboots even if HCI numbering shifts). Falls back to the built-in
-#     UART adapter if ADAPTER_MAC is unset.
-#   - flock: only one BLE operation at a time per adapter (non-blocking).
-#     Concurrent callers get "BLE adapter busy" immediately. Safe for
-#     two bots sharing the same adapter.
-#   - Pre-flight cleanup: kill stale bluepy-helper, stop any active
-#     bluetoothd scan, reset the HCI adapter.
+# Robustness (most logic lives in lib/common.sh):
+#   - Adapter resolution: ADAPTER_MAC -> hciN at runtime (stable
+#     across reboots even if HCI numbering shifts). Falls back to the
+#     built-in UART adapter if ADAPTER_MAC is unset.
+#   - flock: only one BLE operation at a time per adapter
+#     (non-blocking). Concurrent callers get "BLE adapter busy"
+#     immediately. Lock file is world-writable so any user that can
+#     invoke this script can acquire it.
+#   - Pre-flight cleanup (root only): kill stale bluepy-helper, stop
+#     any active bluetoothd scan, reset the HCI adapter. Silent
+#     no-op when run as non-root; rerun with sudo if the adapter
+#     wedges.
 #   - Hard timeout: shell-level timeout wraps keyblepy so a stuck
 #     process can't hang forever.
-#   - Automatic retry: if the first attempt fails (e.g. bond evicted),
-#     retry once with SEC_LEVEL=low (unbonded fallback, ~45s).
+#   - Automatic retry: if the first attempt fails (e.g. bond
+#     evicted), retry once with SEC_LEVEL=low (unbonded fallback,
+#     ~45s).
 #
 # Exit codes:
 #   0  success
@@ -23,60 +27,16 @@
 #   4  BLE adapter not found
 
 cd "$(dirname "$0")"
-if [ ! -f .env ]; then
-    echo "Please create a .env configuration file first (see .env.example)." >&2
-    exit 1
-fi
-set -a; source ./.env; set +a
-source ./venv/bin/activate
+# shellcheck disable=SC1091
+source ./lib/common.sh
+
+load_env
+activate_venv
+resolve_adapter
+acquire_ble_lock
 
 COMMAND="$1"
 HARD_TIMEOUT=$(( ${TIMEOUT:-90} + 10 ))
-
-# --- adapter resolution ----------------------------------------------------
-
-resolve_adapter() {
-    if [ -n "$ADAPTER_MAC" ]; then
-        HCI_IFACE=$(hciconfig -a 2>/dev/null \
-            | grep -B1 "$ADAPTER_MAC" \
-            | grep -oP 'hci\K\d+' \
-            | head -1)
-        if [ -z "$HCI_IFACE" ]; then
-            echo "BLE adapter $ADAPTER_MAC not found. Is the dongle plugged in?" >&2
-            exit 4
-        fi
-    elif [ -z "$HCI_IFACE" ]; then
-        # Default: built-in (UART) adapter.
-        HCI_IFACE=$(hciconfig -a 2>/dev/null \
-            | grep -B1 "Bus: UART" \
-            | grep -oP 'hci\K\d+' \
-            | head -1)
-        if [ -z "$HCI_IFACE" ]; then
-            echo "No built-in BLE adapter found." >&2
-            exit 4
-        fi
-    fi
-}
-
-resolve_adapter
-
-# --- serialize via flock ---------------------------------------------------
-
-LOCK_FILE="/tmp/ble-hci${HCI_IFACE}.lock"
-exec 9>"$LOCK_FILE"
-if ! flock -n 9; then
-    echo "BLE adapter busy (another operation in progress)" >&2
-    exit 3
-fi
-
-# --- helpers ---------------------------------------------------------------
-
-cleanup_ble() {
-    killall -9 bluepy-helper 2>/dev/null || true
-    bluetoothctl scan off >/dev/null 2>&1 || true
-    hciconfig "hci${HCI_IFACE}" reset >/dev/null 2>&1 || true
-    sleep 1
-}
 
 run_keyble() {
     local sec="$1"

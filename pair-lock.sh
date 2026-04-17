@@ -6,44 +6,17 @@
 #   - The lock must be put in pairing mode BEFORE running this script
 #     (press and hold the "open" button for 3 seconds until the LED
 #     turns orange). The pairing window lasts about 30 seconds.
+#   - The bot must not be operating the adapter. This script takes
+#     the same BLE flock as send-command.sh and exits 3 on collision.
 
 cd "$(dirname "$0")"
-if [ ! -f .env ]; then
-    echo "Please create a .env configuration file first (see .env.example)."
-    exit 1
-fi
-set -a; source ./.env; set +a
+# shellcheck disable=SC1091
+source ./lib/common.sh
 
-# --- adapter resolution (same logic as send-command.sh) --------------------
+load_env
+resolve_adapter
+acquire_ble_lock
 
-if [ -n "$ADAPTER_MAC" ]; then
-    HCI_IFACE=$(hciconfig -a 2>/dev/null \
-        | grep -B1 "$ADAPTER_MAC" \
-        | grep -oP 'hci\K\d+' \
-        | head -1)
-    if [ -z "$HCI_IFACE" ]; then
-        echo "✗ BLE adapter $ADAPTER_MAC not found. Is the dongle plugged in?"
-        exit 4
-    fi
-    ADAPTER_LABEL="$ADAPTER_MAC (hci${HCI_IFACE})"
-elif [ -n "$HCI_IFACE" ]; then
-    ADAPTER_LABEL="hci${HCI_IFACE}"
-else
-    HCI_IFACE=$(hciconfig -a 2>/dev/null \
-        | grep -B1 "Bus: UART" \
-        | grep -oP 'hci\K\d+' \
-        | head -1)
-    if [ -z "$HCI_IFACE" ]; then
-        echo "✗ No built-in BLE adapter found."
-        exit 4
-    fi
-    ADAPTER_LABEL="built-in UART (hci${HCI_IFACE})"
-fi
-
-# Resolve the adapter's BD address for bluetoothctl select.
-ADAPTER_BD=$(hciconfig "hci${HCI_IFACE}" 2>/dev/null \
-    | grep -oE '([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}' \
-    | head -1)
 if [ -z "$ADAPTER_BD" ]; then
     echo "✗ Could not read BD address from hci${HCI_IFACE}."
     exit 4
@@ -60,7 +33,9 @@ read -r
 echo ""
 echo "Scanning for KEY-BLE on hci${HCI_IFACE} (20 seconds)..."
 
-# Kill any stale BLE processes first.
+# Kill any stale BLE processes first. Uses sudo explicitly because
+# pair-lock is an interactive admin flow that may be invoked by a
+# non-root user; cleanup_ble's auto-detection wouldn't help here.
 sudo killall -9 bluepy-helper 2>/dev/null || true
 sudo bluetoothctl scan off >/dev/null 2>&1 || true
 sudo systemctl restart bluetooth
@@ -93,6 +68,8 @@ echo "$RESULT" | grep -E 'NEW.*KEY-BLE|Attempt|Paired|Bonded|Trusted|fail|error|
 if echo "$RESULT" | grep -q "Paired: yes"; then
     echo ""
     echo "Verifying with send-command.sh status..."
+    # send-command.sh takes the same flock, so release ours first.
+    release_ble_lock
     ./send-command.sh status
     rc=$?
     if [ $rc -eq 0 ]; then
