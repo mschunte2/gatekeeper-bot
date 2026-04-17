@@ -157,9 +157,17 @@ $EDITOR .env
 ./register-user.sh
 ```
 
-If registration succeeds the LED stops blinking orange, the script exits 0,
-and the Eqiva mobile app (next time it syncs with the lock) shows the new
-user as **"User N"** where `N` is the `USER_ID` you chose.
+**How the lock signals successful registration:** the lock emits a
+short **beep** and the orange LED **stops blinking**. The
+`register-user.sh` script also exits 0, and the Eqiva mobile app (next
+time it syncs with the lock) shows the new user as **"User N"** where
+`N` is the `USER_ID` you chose.
+
+If neither the beep nor the LED change happens within ~30 s after
+running `register-user.sh`, registration failed -- typically because
+the lock exited registration mode before the BLE handshake completed,
+or the auth tag was rejected. Re-press the button (3 s, orange LED)
+and try again.
 
 Confirm:
 

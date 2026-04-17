@@ -188,6 +188,26 @@ systemd-unit/              service file
   `setsockopt(BT_SECURITY): Invalid argument` when bluepy tries to
   set the security level. Use the USB adapter instead.
 
+## Fixed bugs (history, for context)
+
+- `keyblepy/encrypt.py` `compute_authentication_value` once appended
+  an extra `pack('>H', padded_length)` to the final CCM A_0 block,
+  growing it past 16 bytes and causing the auth tag to differ from
+  the reference (oyooyo/keyble). The lock then rejected every
+  `--register` attempt with `AnswerWithoutSecurity 0x81`. Fixed in
+  keyblepy commit `bf26987` -- the final block now matches keyble.js
+  exactly: `[Flags=1, Nonce(13), Counter=0,0]`. The encrypted command
+  path was unaffected in practice (the lock is more lenient on the
+  encrypted MAC) which is why Hoftor commands always worked while KM
+  registration always failed before the fix.
+
+## Lock signals
+
+- The Eqiva Smart Lock confirms successful user registration with a
+  short **beep** plus the orange LED **stops blinking**. The
+  `register-user.sh` script also exits 0. Without that confirmation,
+  the registration did not take, regardless of script return code.
+
 ## Two-bot setup (planned)
 
 Two gatekeeper-bot instances can share one BLE adapter:
