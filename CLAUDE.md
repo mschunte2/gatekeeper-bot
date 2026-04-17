@@ -227,19 +227,29 @@ systemd-unit/              service file
   `register-user.sh` script also exits 0. Without that confirmation,
   the registration did not take, regardless of script return code.
 
-## Two-bot setup (planned)
+## Two-bot setup (deployed)
 
-Two gatekeeper-bot instances can share one BLE adapter:
-- Each bot lives in its own directory with its own `.env` (different
-  `LOCK_MAC`, `USER_KEY`, `DOOR_NAME`, `ALLOWED_CHATS`).
+Two gatekeeper-bot instances run on the Pi sharing one BLE adapter:
+- `/home/pi/gatekeeper-hoftor/` → `deltabot-hoftor.service` →
+  Hoftor lock (LOCK_MAC `00:1a:22:1b:ae:ac`).
+- `/home/pi/gatekeeper-km/` → `deltabot-km.service` →
+  Kulturmetzgerei lock (LOCK_MAC `00:1A:22:1B:AF:3E`).
+- Each bot has its own `.env` with distinct `LOCK_MAC`, `BOT_NAME`,
+  `USER_ID`, `USER_KEY`, `DOOR_NAME`, `ALLOWED_CHATS`.
 - Both set the same `ADAPTER_MAC` → resolve to the same `hciN` →
-  share the same flock file → operations serialize correctly.
+  share the same flock file `/tmp/ble-hci<N>.lock` → operations
+  serialize correctly, even under concurrent taps.
 - `killall bluepy-helper` in cleanup is safe because flock guarantees
   no other bot's process is in-flight.
-- Timing: worst case both users tap simultaneously → one succeeds
-  (~7 s bonded), the other gets "BLE adapter busy" and retries.
-- Each bot needs its own Delta Chat account, its own `BotCli("name")`
-  (for separate config dirs), and its own systemd unit.
+- `BOT_NAME` in `.env` drives `BotCli(BOT_NAME)`, which gives each
+  bot its own config dir (e.g. `~/.config/gatekeeper-km/`) and its
+  own Delta Chat account.
+- Both units are `enabled` with `Restart=always` so they start on
+  boot and recover from crashes automatically.
+
+A third clone `/home/pi/gatekeeper-bot-original/` also exists --
+kept as a clean reference tree for documentation lookups; has no
+systemd unit and no `.env`.
 
 ## Build system
 
@@ -251,11 +261,14 @@ rebuilding, commit the updated `.xdc` so deploys don't need Node.
 ## Deployment
 
 The Pi runs each bot instance as its own systemd service under root
-(needed for BLE raw-HCI access). As of the two-bot split, the active
-instance is `deltabot-hoftor.service`, sourcing its code from
-`/home/pi/gatekeeper-hoftor/`. Sibling clones `gatekeeper-km` and
-`gatekeeper-bot-original` are configured identically but have no
-systemd unit yet.
+(needed for BLE raw-HCI access). Two units are currently active:
+`deltabot-hoftor.service` (from `/home/pi/gatekeeper-hoftor/`) and
+`deltabot-km.service` (from `/home/pi/gatekeeper-km/`). Both use
+the same generic template `systemd-unit/deltabot.service` -- it's
+copied per-bot under `/etc/systemd/system/deltabot-<name>.service`
+with the matching `WorkingDirectory` and `Description`. A third
+clone `/home/pi/gatekeeper-bot-original/` exists as a clean
+reference but has no unit/`.env`.
 
 Each Pi-side clone has `origin` pointing at
 `https://github.com/mschunte2/gatekeeper-bot.git` and

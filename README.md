@@ -97,18 +97,14 @@ both flows end-to-end against an Eqiva eQ-3 SmartLock with the PyPI
 wheel and saw no functional difference vs a self-compiled bluepy
 from upstream master. **No source build is required.**
 
-The only caveat is that PyPI 1.3.0 lacks `connect(timeout=...)`; if
-you pass `--connect-timeout`, keyblepy detects the missing parameter
-at runtime, logs a warning in `--verbose` mode, and falls back to
-the 3-arg signature (the connect still happens; only the user-set
-timeout is ignored). If you specifically need `--connect-timeout`
-honoured at the BLE layer, install bluepy editable from a newer
-checkout:
-
-```bash
-git clone https://github.com/IanHarvey/bluepy.git ../bluepy-src
-pip install -e ../bluepy-src
-```
+Minor note: PyPI 1.3.0 lacks `connect(timeout=...)` -- keyblepy
+detects this and falls back to the 3-arg signature (the connect
+still happens; only `--connect-timeout` is silently ignored). If
+you specifically need that flag honoured at the BLE layer, you can
+install bluepy editable from a newer checkout (`git clone
+https://github.com/IanHarvey/bluepy.git ../bluepy-src && pip install
+-e ../bluepy-src`) -- but the Pi deployment does not, and has had
+no issues.
 
 ---
 
@@ -124,8 +120,8 @@ $EDITOR .env
 | variable          | meaning                                                                                                  |
 |-------------------|----------------------------------------------------------------------------------------------------------|
 | `LOCK_MAC`        | Lock BLE MAC, e.g. `00:CA:FF:EE:DE:AD`. Obtain via `sudo hcitool lescan`; the lock advertises as `KEY-BLE`. |
-| `USER_ID`         | Numeric slot on the lock (0-254). The lock auto-assigns one when you run `register-user.sh`; copy the printed value here. The Eqiva *mobile app* shows the registered user as e.g. **"User 4"** -- that number is your `USER_ID`. |
-| `USER_KEY`        | 32 hex chars (16 bytes) -- your shared secret with the lock. `register-user.sh` generates a fresh one and prints it; copy the printed value here. Keep private. |
+| `USER_ID`         | Numeric slot on the lock (0-254). **Output of `register-user.sh` -- do not set before running it.** The lock auto-assigns this; `register-user.sh` prints the chosen value, which you paste here. The Eqiva *mobile app* shows the registered user as e.g. **"User 4"** -- that number is your `USER_ID`. |
+| `USER_KEY`        | 32 hex chars (16 bytes) -- your shared secret with the lock. **Also an output of `register-user.sh`**; the script generates a fresh random value, registers it with the lock, and prints it. Keep private. |
 | `QR_DATA`         | The full QR string from the lock's setup card, format `M<12-hex-MAC>K<32-hex-card-key><10-char-serial>`. Only needed for `register-user.sh`. |
 | `USER_NAME`       | A label shown in the Eqiva mobile app for this user.                                                    |
 | `ADAPTER_MAC`     | BD address of the BLE adapter to use (e.g. `8A:88:4B:C2:9C:B9` for a USB dongle). Resolved to `hciN` at runtime so HCI renumbering across reboots is harmless. Leave blank to default to the built-in UART adapter. Find yours with `hciconfig -a`. |
@@ -166,7 +162,8 @@ running the script -- registration creates them. (`LOCK_MAC`,
 
 ```bash
 # With the lock's LED orange (3-second "open" press), run:
-./register-user.sh
+./register-user.sh                # quiet (summary only)
+./register-user.sh -v             # also streams keyblepy's debug log live
 ```
 
 On success the script prints, e.g.:
@@ -183,13 +180,16 @@ To activate, set the following two lines in
 
 Then restart the bot service, e.g.
     sudo systemctl restart deltabot-gatekeeper-km.service
-
-Full log saved at: /tmp/keyble-register.XXXXXX.log
 ============================================================
 ```
 
-Paste those two lines into `.env` and restart the service. The full
-verbose keyblepy log is kept at the printed path for debugging.
+Paste those two lines into `.env` and restart the service. **No
+persistent log file is written**: the keyblepy `--verbose` stream
+re-echoes the newly-generated `--user-key` on the command line, and
+a captured log would be a credential leak. The output is held in
+shell memory only for the duration of the run; on failure it is
+dumped to stderr so you can still diagnose (without the success
+credentials surviving disk).
 
 **How the lock signals successful registration:** the lock emits a
 short **beep** and the orange LED **stops blinking**, and the Eqiva
@@ -199,10 +199,11 @@ matching the assigned `USER_ID`.
 If neither the beep nor the LED change happens within ~30 s after
 running `register-user.sh`, registration failed -- typically because
 the lock exited registration mode before the BLE handshake completed,
-or the auth tag was rejected. The script exits non-zero, prints the
-log path, and **does not** print credentials (so you can't paste a
-half-baked entry into `.env`). Re-press the button (3 s, orange LED)
-and try again.
+or the auth tag was rejected. The script exits non-zero and **does
+not** print credentials (so you can't paste a half-baked entry into
+`.env`). In quiet mode the captured keyblepy output is dumped to
+stderr for debugging; in `-v` mode you've already seen it live.
+Re-press the button (3 s, orange LED) and try again.
 
 Confirm with the printed credentials in place:
 
@@ -415,7 +416,7 @@ for background on bonding.
    | `/status`           | current lock state                                |
    | `/lock` / `/zu`     | engage the bolt                                   |
    | `/unlock` / `/auf`  | retract the bolt                                  |
-   | `/apps`             | (re)send all webxdc apps (Gatekeeper + Quick-Unlock) |
+   | `/apps`             | (re)send every `apps/*.xdc` in the chat (currently Gatekeeper + Quick-Lock) |
    | `/id`               | show this chat's id (always works, no permission) |
    | anything else       | help text                                         |
 
@@ -613,9 +614,11 @@ that got fixed in keyblepy, see [`keyblepy/README.md`](./keyblepy/README.md).
 
 ## 11. Building the webxdc apps
 
-You only need to rebuild if you change something under `apps/gatekeeper/`
-or `apps/quick-unlock/`. The repo ships pre-built `apps/gatekeeper.xdc`
-and `apps/quick-unlock.xdc` so a fresh deploy doesn't require Node.js.
+You only need to rebuild if you change something under an `apps/<id>/`
+source directory. The repo ships pre-built artifacts
+(`apps/gatekeeper.xdc`, `apps/quick-lock.xdc`, and
+`apps-disabled/quick-unlock.xdc`) so a fresh deploy doesn't require
+Node.js on the Pi.
 
 ### 11.1 Prerequisites
 
@@ -631,15 +634,17 @@ npm run build    # writes ../gatekeeper.xdc
 
 cd ../quick-unlock
 npm install      # one-time
-npm run build    # writes ../quick-unlock.xdc
+npm run build    # writes ../../apps-disabled/quick-unlock.xdc  # currently disabled
 
 cd ../quick-lock
 npm install      # one-time
 npm run build    # writes ../quick-lock.xdc
 ```
 
-Each `vite.config.mjs` writes the bundled `.xdc` one level up, into
-`apps/`, replacing the existing artifact.
+Each `vite.config.mjs` sets its own `outDir` in the `buildXDC` plugin
+call. Most apps write to `apps/` (served by `/apps`); the
+`quick-unlock` config points at `apps-disabled/` instead, because
+that app is currently disabled -- see section 7.3.
 
 ### 11.3 What the apps share
 
