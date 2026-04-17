@@ -211,10 +211,21 @@ rebuilding, commit the updated `.xdc` so deploys don't need Node.
 
 ## Deployment
 
-The Pi runs the bot as a systemd service (`deltabot.service`) under
-root (needed for BLE raw-HCI access). The repo is cloned to
-`/home/pi/gatekeeper-bot/` and origin is
-`ssh://pi@gatekeeper:/home/pi/gatekeeper-bot` with
-`receive.denyCurrentBranch=updateInstead`. GitHub mirror at
-`https://github.com/mschunte2/gatekeeper-bot` receives squashed
-release commits (not the granular dev history).
+The Pi runs each bot instance as its own systemd service under root
+(needed for BLE raw-HCI access). As of the two-bot split, the active
+instance is `deltabot-hoftor.service`, sourcing its code from
+`/home/pi/gatekeeper-hoftor/`. Sibling clones `gatekeeper-km` and
+`gatekeeper-bot-original` are configured identically but have no
+systemd unit yet.
+
+Each Pi-side clone has `origin` pointing at
+`https://github.com/mschunte2/gatekeeper-bot.git` and
+`submodule.recurse = true`, so a plain `git pull` as user `pi` pulls
+the parent and the `keyblepy` submodule in one shot; a subsequent
+`sudo systemctl restart deltabot-hoftor` reloads the Python process.
+
+GitHub is the canonical deployment source, not a squashed mirror. It
+currently carries the granular dev history (force-pushed from the dev
+workstation's `main`). If you decide to return to a squashed-release
+model, rewrite both `github/main` and every Pi clone's `main` in
+lockstep — a mismatch breaks fast-forward pulls.
