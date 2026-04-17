@@ -60,8 +60,8 @@ if [ ! -f "$SCRIPT_SRC" ] || [ ! -f "$UNIT_SRC" ]; then
     exit 1
 fi
 
-install -m 755 "$SCRIPT_SRC" "$SCRIPT_DST"
-install -m 644 "$UNIT_SRC" "$UNIT_DST"
+install -D -m 755 "$SCRIPT_SRC" "$SCRIPT_DST"
+install -D -m 644 "$UNIT_SRC" "$UNIT_DST"
 systemctl daemon-reload
 systemctl enable bt-adapter-wait.service
 
