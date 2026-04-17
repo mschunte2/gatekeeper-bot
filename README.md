@@ -416,7 +416,8 @@ for background on bonding.
    | `/status`           | current lock state                                |
    | `/lock` / `/zu`     | engage the bolt                                   |
    | `/unlock` / `/auf`  | retract the bolt                                  |
-   | `/apps`             | (re)send every `apps/*.xdc` in the chat (currently Gatekeeper + Quick-Lock) |
+   | `/apps`             | deliver every `apps/*.xdc` to this chat, **idempotently** -- apps already installed are skipped (state is just refreshed). Currently delivers Gatekeeper + Quick-Lock. |
+   | `/apps reset`       | wipe the bot's tracking for this chat and send every app fresh. Use when a user deleted the old app message locally and wants a clean copy. |
    | `/id`               | show this chat's id (always works, no permission) |
    | anything else       | help text                                         |
 

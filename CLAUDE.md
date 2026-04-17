@@ -109,9 +109,18 @@ silent (read-only, auto-requested on app open). Text commands echo
 raw subprocess output instead (the user's own message already
 identifies them).
 
-### App discovery
+### App discovery and idempotent /apps
 `delta-door-bot.py` scans `apps/*.xdc` on each `/apps` call. No
 hard-coded list. Dropping a new `<id>.xdc` into `apps/` is enough.
+
+`/apps` is **idempotent**: the bot persists `chat_id → {app_id → msgid}`
+in `~/.config/<BOT_NAME>/app_msgids.json`, and on each call only sends
+apps that aren't already installed in this chat (for live ones, it
+refreshes state via `_push_state` but doesn't resend the binary).
+`/apps reset` wipes the tracking for the chat and sends every app
+fresh -- the escape hatch for "I deleted the old message locally."
+Liveness of a tracked msgid is verified with `bot.rpc.get_message`;
+if it raises, the app is treated as deleted and re-sent.
 
 `apps-disabled/` exists for built artifacts that we deliberately do
 not serve (currently: `quick-unlock.xdc`, judged too easy to trigger

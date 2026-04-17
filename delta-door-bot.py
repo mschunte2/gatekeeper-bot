@@ -6,7 +6,9 @@ Text path:
     /unlock | /auf    -> send-command.sh unlock
     /status           -> send-command.sh status
     /id               -> reply with this chat's id (always allowed)
-    /apps             -> (re)send all webxdc apps to this chat
+    /apps             -> idempotently deliver webxdc apps (skip ones
+                         already in this chat; refresh their state)
+    /apps reset       -> wipe tracking and send every app fresh
     anything else     -> help text
 
 Webxdc apps (apps/<id>.xdc), all sharing one protocol:
@@ -44,7 +46,8 @@ DEFAULT_HELP_MESSAGE = (
     " /lock or /zu - locks gate\n"
     " /unlock or /auf - unlocks gate\n"
     " /status - print current status\n"
-    " /apps - (re)send all webxdc control apps to this chat\n"
+    " /apps - deliver webxdc control apps (idempotent; skips apps already in this chat)\n"
+    " /apps reset - wipe tracking and send every app fresh\n"
     " /id - get this chat's id\n"
     " - Any other input shows this message.\n"
     " NOTE: lock operations can take up to 90 seconds."
@@ -106,41 +109,63 @@ STATE_DIR = Path(user_config_dir(BOT_NAME))
 APP_MSGIDS_PATH = STATE_DIR / "app_msgids.json"
 
 
-def _load_msgids() -> dict[int, list[int]]:
-    """Load chat_id -> [msgid, ...] from disk.
+def _load_msgids() -> dict[int, dict[str, int]]:
+    """Load chat_id -> {app_id -> msgid} from disk.
 
-    Tolerates the legacy single-int-per-chat layout.
+    The state layout evolved from a flat list-per-chat (just msgids,
+    no app identity) to a dict-per-chat (app_id -> msgid) so /apps
+    can be idempotent. Legacy list entries -- which don't record
+    which msgid was which app -- are dropped on load with an info
+    log; the next /apps in that chat re-seeds cleanly. Legacy
+    single-int entries (older still) are treated the same way.
     """
     try:
         raw = json.loads(APP_MSGIDS_PATH.read_text())
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
-    out: dict[int, list[int]] = {}
+    out: dict[int, dict[str, int]] = {}
+    legacy_dropped: list[int] = []
     for k, v in raw.items():
         try:
             chat = int(k)
         except (TypeError, ValueError):
             continue
-        if isinstance(v, list):
-            ids = [int(m) for m in v if isinstance(m, (int, str)) and str(m).strip()]
+        if isinstance(v, dict):
+            apps: dict[str, int] = {}
+            for app_id, msgid in v.items():
+                try:
+                    apps[str(app_id)] = int(msgid)
+                except (TypeError, ValueError):
+                    continue
+            if apps:
+                out[chat] = apps
         else:
-            try:
-                ids = [int(v)]
-            except (TypeError, ValueError):
-                ids = []
-        if ids:
-            out[chat] = ids
+            # Legacy shape (list[int] or single int): we can't recover
+            # the per-app identity, so drop it. /apps will re-seed.
+            legacy_dropped.append(chat)
+    if legacy_dropped:
+        # Use print here rather than bot.logger -- called at import time,
+        # before the BotCli logger is wired up.
+        print(
+            f"[gatekeeper-bot] dropping legacy app_msgids entries for chats "
+            f"{legacy_dropped}; run /apps in each chat to re-seed",
+            flush=True,
+        )
     return out
 
 
-def _save_msgids(data: dict[int, list[int]]) -> None:
+def _save_msgids(data: dict[int, dict[str, int]]) -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     tmp = APP_MSGIDS_PATH.with_suffix(".tmp")
-    tmp.write_text(json.dumps({str(k): [int(m) for m in v] for k, v in data.items()}))
+    serialised = {
+        str(chat): {str(app_id): int(msgid) for app_id, msgid in apps.items()}
+        for chat, apps in data.items()
+    }
+    tmp.write_text(json.dumps(serialised))
     os.replace(tmp, APP_MSGIDS_PATH)
 
 
-_msgid_map: dict[int, list[int]] = _load_msgids()
+_msgid_map: dict[int, dict[str, int]] = _load_msgids()
 _last_known_state: str = "unknown"
 _last_battery_low: bool = False
 
@@ -206,10 +231,10 @@ def _push_state(bot, accid: int, state: str) -> int:
     }
     body = json.dumps(update)
     pushed = 0
-    for chatid, msgids in list(_msgid_map.items()):
+    for chatid, apps in list(_msgid_map.items()):
         if not _is_allowed(chatid):
             continue
-        for msgid in msgids:
+        for msgid in apps.values():
             try:
                 bot.rpc.send_webxdc_status_update(accid, msgid, body, "")
                 pushed += 1
@@ -236,10 +261,10 @@ def _push_ack(bot, accid: int, cmd: str) -> int:
     """
     body = json.dumps({"payload": {"ack": cmd}})
     pushed = 0
-    for chatid, msgids in list(_msgid_map.items()):
+    for chatid, apps in list(_msgid_map.items()):
         if not _is_allowed(chatid):
             continue
-        for msgid in msgids:
+        for msgid in apps.values():
             try:
                 bot.rpc.send_webxdc_status_update(accid, msgid, body, "")
                 pushed += 1
@@ -250,33 +275,77 @@ def _push_ack(bot, accid: int, cmd: str) -> int:
     return pushed
 
 
-def _send_apps(bot, accid: int, chatid: int) -> list[int]:
-    """Send every available .xdc to `chatid` and remember the new msgids.
+def _send_apps(
+    bot, accid: int, chatid: int, *, force: bool = False
+) -> tuple[list[str], list[str]]:
+    """Idempotently deliver every available .xdc to `chatid`.
 
-    Replaces any previously-tracked msgids for this chat -- /apps means
-    "fresh set". Old in-chat app messages still work but are no longer
-    refreshed by silent state pushes.
+    For each app discovered in `apps/*.xdc`:
+      * if this chat already has a *live* instance of that app (tracked
+        in `_msgid_map` and `bot.rpc.get_message` doesn't raise), skip
+        the binary resend -- the end-of-function `_push_state` still
+        refreshes the UI;
+      * otherwise send the .xdc, store the new msgid under its app_id.
+
+    When `force=True`, the tracked dict for this chat is wiped up front
+    and everything is re-sent. Used by `/apps reset`.
+
+    Returns `(sent, refreshed)` -- lists of app_ids in each bucket,
+    suitable for assembling a human-readable reply.
     """
-    sent: list[int] = []
+    sent: list[str] = []
+    refreshed: list[str] = []
     paths = _xdc_paths()
     if not paths:
         bot.logger.warning(f"no .xdc files found in {APPS_DIR}; nothing to send")
-        return sent
+        return sent, refreshed
+
+    if force:
+        _msgid_map.pop(chatid, None)
+
+    chat_apps = _msgid_map.setdefault(chatid, {})
+
     for app_id, path in paths:
+        existing = chat_apps.get(app_id)
+        live = False
+        if existing is not None:
+            try:
+                # get_message raises for an unknown / deleted msgid.
+                bot.rpc.get_message(accid, existing)
+                live = True
+            except Exception as ex:
+                bot.logger.info(
+                    f"tracked msgid {existing} for app {app_id!r} in chat "
+                    f"{chatid} no longer available ({ex}); re-sending"
+                )
+
+        if live:
+            # Keep the existing instance; refresh its door_name so any
+            # env change since last /apps propagates. State refresh
+            # happens uniformly via _push_state below.
+            _push_door_name(bot, accid, existing)
+            refreshed.append(app_id)
+            bot.logger.info(
+                f"app {app_id!r} already in chat {chatid} msgid={existing}; skipping resend"
+            )
+            continue
+
         try:
             msgid = int(bot.rpc.send_msg(accid, chatid, MsgData(file=path)))
         except Exception as ex:
             bot.logger.error(f"send app {app_id!r} to chat {chatid} failed: {ex}")
             continue
-        sent.append(msgid)
+        chat_apps[app_id] = msgid
+        sent.append(app_id)
         bot.logger.info(f"app {app_id!r} sent to chat {chatid} msgid={msgid}")
         _push_door_name(bot, accid, msgid)
-    if sent:
-        _msgid_map[chatid] = sent
+
+    if sent or refreshed:
         _save_msgids(_msgid_map)
-        # Seed state for every freshly-sent instance.
+        # State push is cheap and keeps both freshly-sent and
+        # already-present instances in sync.
         _push_state(bot, accid, _last_known_state)
-    return sent
+    return sent, refreshed
 
 
 # ----------------------------------------------------- shared command path
@@ -432,21 +501,42 @@ def on_webxdc_update(bot, accid, event):
     # or .json got out of sync), record it now and seed it with current
     # door_name + state so the icon updates immediately rather than
     # waiting for the next state-changing command.
-    existing = _msgid_map.get(chatid, [])
-    if msgid not in existing:
-        _msgid_map[chatid] = existing + [msgid]
-        _save_msgids(_msgid_map)
-        bot.logger.info(f"learned app msgid={msgid} for chat {chatid}")
-        _push_door_name(bot, accid, msgid)
-        try:
-            bot.rpc.send_webxdc_status_update(
-                accid, msgid,
-                json.dumps({"payload": {"response": {"name": "bot",
-                                                     "text": _last_known_state}}}),
-                "",
+    #
+    # Under the per-app tracking shape we need to know *which* app this
+    # msgid is. We derive the app_id from the attached filename's stem
+    # (gatekeeper.xdc -> "gatekeeper"); that matches the app_id used by
+    # _send_apps (`_xdc_paths()` returns `p.stem`). If we can't derive
+    # it (filename missing or doesn't end in .xdc), we log and skip --
+    # the user's next /apps reset will reseed properly.
+    chat_apps = _msgid_map.setdefault(chatid, {})
+    if msgid not in chat_apps.values():
+        learned_id: str | None = None
+        for attr in ("file_name", "filename"):
+            name = getattr(msg, attr, None)
+            if isinstance(name, str) and name.endswith(".xdc"):
+                learned_id = Path(name).stem
+                break
+        if learned_id:
+            chat_apps[learned_id] = msgid
+            _save_msgids(_msgid_map)
+            bot.logger.info(
+                f"learned app {learned_id!r} msgid={msgid} for chat {chatid}"
             )
-        except Exception as ex:
-            bot.logger.warning(f"seed state push to msgid {msgid} failed: {ex}")
+            _push_door_name(bot, accid, msgid)
+            try:
+                bot.rpc.send_webxdc_status_update(
+                    accid, msgid,
+                    json.dumps({"payload": {"response": {"name": "bot",
+                                                         "text": _last_known_state}}}),
+                    "",
+                )
+            except Exception as ex:
+                bot.logger.warning(f"seed state push to msgid {msgid} failed: {ex}")
+        else:
+            bot.logger.info(
+                f"could not derive app_id for msgid={msgid} in chat {chatid} "
+                f"(no .xdc file_name); not learning -- run /apps reset to reseed"
+            )
 
     if cmd not in VALID_COMMANDS:
         bot.logger.warning(f"refusing webxdc command {cmd!r}")
@@ -509,11 +599,38 @@ def on_new_message(bot, accid, event):
         )
         return
 
-    if text == "/apps":
+    parts = text.split()
+    if parts and parts[0] == "/apps":
         if not _is_allowed(chatid):
             bot.rpc.send_msg(accid, chatid, MsgData(text="permission denied"))
             return
-        _send_apps(bot, accid, chatid)
+        # /apps is idempotent by default: re-sends only apps that aren't
+        # already installed in this chat. /apps reset wipes the tracking
+        # and sends every app fresh -- the escape hatch for "I deleted
+        # the message locally and want a clean copy".
+        force = len(parts) > 1 and parts[1].lower() == "reset"
+        sent, refreshed = _send_apps(bot, accid, chatid, force=force)
+        if force:
+            if sent:
+                reply = f"Apps reset: sent {', '.join(sent)}."
+            else:
+                reply = "No apps available to send."
+        elif sent and refreshed:
+            reply = (
+                f"Sent: {', '.join(sent)}. "
+                f"Already present (state refreshed): {', '.join(refreshed)}."
+            )
+        elif sent:
+            reply = f"Sent: {', '.join(sent)}."
+        elif refreshed:
+            reply = (
+                f"All apps already present in this chat "
+                f"(state refreshed): {', '.join(refreshed)}. "
+                f"Use '/apps reset' to force a fresh send."
+            )
+        else:
+            reply = "No apps available to send."
+        bot.rpc.send_msg(accid, chatid, MsgData(text=reply))
         return
 
     help_text = os.environ.get("HELP_MESSAGE", DEFAULT_HELP_MESSAGE)
@@ -563,10 +680,10 @@ def _on_start(bot, _args):
     if not accounts:
         return
     accid = accounts[0]
-    for chatid, msgids in list(_msgid_map.items()):
+    for chatid, apps in list(_msgid_map.items()):
         if not _is_allowed(chatid):
             continue
-        for msgid in msgids:
+        for msgid in apps.values():
             _push_door_name(bot, accid, msgid)
     _push_state(bot, accid, _last_known_state)
 
