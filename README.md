@@ -279,23 +279,41 @@ Contents of `systemd-unit/deltabot.service`:
 ```ini
 [Unit]
 Description=Deltachat-Bot-Gatekeeper Service
-After=network.target
+After=network.target bluetooth.service
 
 [Service]
 Type=simple
-User=root
+User=pi
+Group=pi
 ExecStart=/home/pi/gatekeeper-bot/start-gatekeeper-bot.sh
 Restart=always
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-Runs as `root` because BlueZ raw-HCI access typically needs `CAP_NET_RAW`.
-If you'd rather run unprivileged, grant that capability to
-`bluepy-helper` instead (`sudo setcap cap_net_raw,cap_net_admin+eip
-venv/lib/python3.11/site-packages/bluepy/bluepy-helper`) and change `User=`
-to `pi`.
+Runs as an unprivileged user (`pi`). BLE raw-HCI access needs
+`CAP_NET_RAW` + `CAP_NET_ADMIN`; rather than grant the whole bot
+those capabilities, we grant them file-bound to the single helper
+binary that actually opens the raw socket:
+
+```bash
+sudo setcap cap_net_raw,cap_net_admin+eip \
+    /home/pi/gatekeeper-bot/venv/lib/python3.11/site-packages/bluepy/bluepy-helper
+```
+
+Do this **once per venv** (so once per bot on a multi-bot host).
+Re-run after any `pip install --force-reinstall bluepy`, which
+rewrites the binary and silently drops capabilities.
+
+One known behavioural compromise: the adapter-wedging recovery path
+in `lib/common.sh:cleanup_ble` (`killall bluepy-helper`,
+`hciconfig reset`) still needs root and silently no-ops under
+`pi`. If the adapter actually wedges, the operator recovers
+manually with `sudo ./send-command.sh status` once (the same
+script self-heals under root). For a home deployment this has
+been rare; an industrial setup might prefer to keep `User=root`.
 
 ### 6.2 Installing the unit
 
@@ -333,7 +351,8 @@ After=network.target bluetooth.service
 
 [Service]
 Type=simple
-User=root
+User=pi
+Group=pi
 WorkingDirectory=/home/pi/gatekeeper-bot
 ExecStart=/home/pi/gatekeeper-bot/start-gatekeeper-bot.sh
 Restart=always
@@ -609,7 +628,8 @@ gatekeeper-bot/
 Lives outside this tree, on the root filesystem — survives reboots.
 The directory is keyed by `BOT_NAME` (from `.env`), so two bots on
 the same host keep their state separate. Under the bundled systemd
-unit the bot runs as root, so the dir is `/root/.config/<BOT_NAME>/`.
+unit the bot runs as `pi`, so the directory is
+`/home/pi/.config/<BOT_NAME>/`.
 
 - `~/.config/<BOT_NAME>/`                  -- Delta Chat account database (SQLite).
   Protected only by filesystem permissions; back up if you care

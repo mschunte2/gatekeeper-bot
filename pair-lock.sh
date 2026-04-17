@@ -3,11 +3,35 @@
 # Run this when send-command.sh reports "Bond may be lost".
 #
 # Prerequisites:
+#   - Must run as root (or under sudo). This script drives bluetoothctl
+#     pair / trust / remove, restarts the bluetooth service, and
+#     kills stale bluepy-helper processes -- all of which need root.
 #   - The lock must be put in pairing mode BEFORE running this script
 #     (press and hold the "open" button for 3 seconds until the LED
 #     turns orange). The pairing window lasts about 30 seconds.
 #   - The bot must not be operating the adapter. This script takes
 #     the same BLE flock as send-command.sh and exits 3 on collision.
+
+# Fail fast if not root -- the bot runs as `pi` now, so accidental
+# invocation without sudo is more likely than it used to be. Without
+# this check, the script limps along but prompts for the sudo
+# password several times during the bluetoothctl session, which
+# breaks the 30-second pairing window more often than not.
+if [ "$EUID" -ne 0 ]; then
+    cat >&2 <<EOF
+This script must be run with root privileges -- it drives the BlueZ
+bond (bluetoothctl pair / trust), restarts the bluetooth service,
+and resets the HCI adapter, all of which require CAP_NET_ADMIN.
+
+Re-run as:
+
+    sudo $0
+
+(the bot service runs as an unprivileged user, but the *one-off*
+bonding step does need root.)
+EOF
+    exit 5
+fi
 
 cd "$(dirname "$0")"
 # shellcheck disable=SC1091

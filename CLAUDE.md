@@ -269,7 +269,11 @@ rebuilding, commit the updated `.xdc` so deploys don't need Node.
 
 ## Deployment
 
-The Pi runs each bot instance as its own systemd service under root
+The Pi runs each bot instance as its own systemd service under the
+unprivileged `pi` user (BLE access via `setcap cap_net_raw,cap_net_admin+eip`
+on each venv's `bluepy-helper`; `lib/common.sh:cleanup_ble` silently
+no-ops under non-root, so adapter-wedging recovery is a manual
+`sudo ./send-command.sh status`). Previously ran under root
 (needed for BLE raw-HCI access). Two units are currently active:
 `deltabot-hoftor.service` (from `/home/pi/gatekeeper-hoftor/`) and
 `deltabot-km.service` (from `/home/pi/gatekeeper-km/`). Both use
