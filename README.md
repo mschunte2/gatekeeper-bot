@@ -115,8 +115,8 @@ $EDITOR .env
 | variable          | meaning                                                                                                  |
 |-------------------|----------------------------------------------------------------------------------------------------------|
 | `LOCK_MAC`        | Lock BLE MAC, e.g. `00:CA:FF:EE:DE:AD`. Obtain via `sudo hcitool lescan`; the lock advertises as `KEY-BLE`. |
-| `USER_ID`         | Numeric slot on the lock (1-255). You pick this. After `register-user.sh` succeeds, the Eqiva *mobile app* will show the registered user as e.g. **"User 4"** -- that number is your `USER_ID`. |
-| `USER_KEY`        | 32 hex chars (16 bytes) -- your shared secret with the lock. Generate with `openssl rand -hex 16`. Keep private. |
+| `USER_ID`         | Numeric slot on the lock (0-254). The lock auto-assigns one when you run `register-user.sh`; copy the printed value here. The Eqiva *mobile app* shows the registered user as e.g. **"User 4"** -- that number is your `USER_ID`. |
+| `USER_KEY`        | 32 hex chars (16 bytes) -- your shared secret with the lock. `register-user.sh` generates a fresh one and prints it; copy the printed value here. Keep private. |
 | `QR_DATA`         | The full QR string from the lock's setup card, format `M<12-hex-MAC>K<32-hex-card-key><10-char-serial>`. Only needed for `register-user.sh`. |
 | `USER_NAME`       | A label shown in the Eqiva mobile app for this user.                                                    |
 | `ADAPTER_MAC`     | BD address of the BLE adapter to use (e.g. `8A:88:4B:C2:9C:B9` for a USB dongle). Resolved to `hciN` at runtime so HCI renumbering across reboots is harmless. Leave blank to default to the built-in UART adapter. Find yours with `hciconfig -a`. |
@@ -142,34 +142,60 @@ its LED turns orange.** That's the signal that the lock will accept a new
 user registration on the next BLE connection. The registration window lasts
 about 30 seconds; if you miss it, repeat the press.
 
-### 4.2 Generate a user-key and register
+### 4.2 Run register-user.sh and copy its output into .env
+
+`register-user.sh` does **all** the credential work for you:
+
+- generates a fresh random 16-byte user-key,
+- asks the lock to **auto-assign** a free slot (you don't pick one),
+- on success, prints both the assigned `USER_ID` and the new
+  `USER_KEY` in a copy-pasteable block.
+
+You do **not** need to set `USER_ID` or `USER_KEY` in `.env` before
+running the script -- registration creates them. (`LOCK_MAC`,
+`QR_DATA`, `ADAPTER_MAC`, `USER_NAME` do still need to be set.)
 
 ```bash
-# Generate a fresh random user-key and pick an empty slot number.
-NEW_USER_KEY=$(openssl rand -hex 16)
-echo "$NEW_USER_KEY"
-# Pick USER_ID (e.g. 4) -- any number 1..255 that isn't already taken.
-
-# Put USER_KEY and USER_ID into .env.
-$EDITOR .env
-
-# With the lock's LED orange, run:
+# With the lock's LED orange (3-second "open" press), run:
 ./register-user.sh
 ```
 
+On success the script prints, e.g.:
+
+```
+============================================================
+Registration successful.
+
+To activate, set the following two lines in
+/home/pi/gatekeeper-km/.env
+
+    USER_ID=2
+    USER_KEY=c4360e78beaf524c4e6af66dec48e11d
+
+Then restart the bot service, e.g.
+    sudo systemctl restart deltabot-gatekeeper-km.service
+
+Full log saved at: /tmp/keyble-register.XXXXXX.log
+============================================================
+```
+
+Paste those two lines into `.env` and restart the service. The full
+verbose keyblepy log is kept at the printed path for debugging.
+
 **How the lock signals successful registration:** the lock emits a
-short **beep** and the orange LED **stops blinking**. The
-`register-user.sh` script also exits 0, and the Eqiva mobile app (next
-time it syncs with the lock) shows the new user as **"User N"** where
-`N` is the `USER_ID` you chose.
+short **beep** and the orange LED **stops blinking**, and the Eqiva
+mobile app (next time it syncs) shows the new user as **"User N"**
+matching the assigned `USER_ID`.
 
 If neither the beep nor the LED change happens within ~30 s after
 running `register-user.sh`, registration failed -- typically because
 the lock exited registration mode before the BLE handshake completed,
-or the auth tag was rejected. Re-press the button (3 s, orange LED)
+or the auth tag was rejected. The script exits non-zero, prints the
+log path, and **does not** print credentials (so you can't paste a
+half-baked entry into `.env`). Re-press the button (3 s, orange LED)
 and try again.
 
-Confirm:
+Confirm with the printed credentials in place:
 
 ```bash
 ./send-command.sh status
@@ -178,10 +204,15 @@ Confirm:
 
 ### 4.3 Notes
 
-- User slots on Eqiva locks are finite (roughly 8-10). If the slot you chose
-  is taken, registration times out; pick another number.
-- Revoking a user: do it from the Eqiva mobile app (admin device). Pick the
-  user and tap *Delete*. The slot becomes free for re-registration.
+- User slots on Eqiva locks are finite (roughly 8-10). If all slots
+  are taken, registration is rejected; revoke a user from the Eqiva
+  mobile app first to free a slot.
+- Revoking a user: do it from the Eqiva mobile app (admin device).
+  Pick the user and tap *Delete*. The slot becomes free for
+  re-registration.
+- If you specifically need to register into a *chosen* slot rather
+  than letting the lock pick, call `keyblepy/keyble.py` directly with
+  `--user-id N`. `register-user.sh` always uses auto-assign.
 
 ---
 
