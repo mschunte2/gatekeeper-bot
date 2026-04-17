@@ -269,23 +269,69 @@ the lock keeps one bond entry per peer.
 
 ## 6. Run as a systemd service
 
-The included `systemd-unit/deltabot.service` wraps `start-gatekeeper-bot.sh`
-with restart-on-failure semantics.
+Use the bundled `install-systemd-unit.sh` script rather than copying
+the unit file by hand -- it handles the per-bot parameterisation
+(service name, description, working dir) and the required `setcap`
+step in one shot.
 
-### 6.1 The unit file
+### 6.1 Installing
 
-Contents of `systemd-unit/deltabot.service`:
+```bash
+cd /home/pi/gatekeeper-bot       # or wherever this bot's clone lives
+$EDITOR .env                     # set BOT_NAME, DOOR_NAME, etc.
+sudo ./install-systemd-unit.sh   # interactive: confirms overwrite + start
+```
+
+The script:
+
+1. Reads `BOT_NAME` and `DOOR_NAME` from `.env` in the current
+   directory.
+2. Renders `systemd-unit/deltabot.service.template` into
+   `/etc/systemd/system/deltabot-<BOT_NAME>.service`.
+3. Runs `setcap cap_net_raw,cap_net_admin+eip` on the venv's
+   `bluepy-helper` so the bot can open raw HCI sockets as an
+   unprivileged user.
+4. `systemctl daemon-reload`, then offers to `enable --now` the
+   service.
+
+For a two-bot deployment you'd run the installer from each bot's
+directory:
+
+```bash
+cd /home/pi/gatekeeper-km     && sudo ./install-systemd-unit.sh -y
+cd /home/pi/gatekeeper-hoftor && sudo ./install-systemd-unit.sh -y
+```
+
+Useful flags:
+
+- `-y` / `--yes`  -- non-interactive; overwrite existing unit and
+  enable+start without prompting.
+- `--skip-setcap` -- skip the setcap step (e.g. you applied it
+  manually or you're deploying to a host without bluepy).
+- `--dry-run`     -- print the rendered unit to stdout and exit;
+  does not touch `/etc/systemd/system/` or file capabilities.
+
+The installer is idempotent: re-running against an up-to-date
+target is a no-op beyond re-applying setcap. If the live unit has
+diverged from what the installer would render, you see a diff and
+a confirmation prompt before anything is overwritten.
+
+### 6.2 The unit template
+
+The template at `systemd-unit/deltabot.service.template` is what the
+installer fills in:
 
 ```ini
 [Unit]
-Description=Deltachat-Bot-Gatekeeper Service
+Description=Gatekeeper Bot - @DESCRIPTION@
 After=network.target bluetooth.service
 
 [Service]
 Type=simple
 User=pi
 Group=pi
-ExecStart=/home/pi/gatekeeper-bot/start-gatekeeper-bot.sh
+WorkingDirectory=@WORKING_DIR@
+ExecStart=@WORKING_DIR@/start-gatekeeper-bot.sh
 Restart=always
 RestartSec=5
 
@@ -295,17 +341,11 @@ WantedBy=multi-user.target
 
 Runs as an unprivileged user (`pi`). BLE raw-HCI access needs
 `CAP_NET_RAW` + `CAP_NET_ADMIN`; rather than grant the whole bot
-those capabilities, we grant them file-bound to the single helper
-binary that actually opens the raw socket:
-
-```bash
-sudo setcap cap_net_raw,cap_net_admin+eip \
-    /home/pi/gatekeeper-bot/venv/lib/python3.11/site-packages/bluepy/bluepy-helper
-```
-
-Do this **once per venv** (so once per bot on a multi-bot host).
-Re-run after any `pip install --force-reinstall bluepy`, which
-rewrites the binary and silently drops capabilities.
+those capabilities, `install-systemd-unit.sh` grants them file-bound
+to the single helper binary that actually opens the raw socket
+(`venv/lib/python*/site-packages/bluepy/bluepy-helper`). The
+capability is lost on `pip install --force-reinstall bluepy`, so
+re-run the installer after rebuilding the venv.
 
 One known behavioural compromise: the adapter-wedging recovery path
 in `lib/common.sh:cleanup_ble` (`killall bluepy-helper`,
@@ -315,55 +355,21 @@ manually with `sudo ./send-command.sh status` once (the same
 script self-heals under root). For a home deployment this has
 been rare; an industrial setup might prefer to keep `User=root`.
 
-### 6.2 Installing the unit
-
-```bash
-sudo cp systemd-unit/deltabot.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable deltabot        # start at boot
-sudo systemctl start deltabot         # start now
-
-sudo systemctl status deltabot        # confirm "active (running)"
-sudo journalctl -u deltabot -f        # tail logs
-```
-
 ### 6.3 After editing `.env` or code
 
 ```bash
-sudo systemctl restart deltabot
+sudo systemctl restart deltabot-<BOT_NAME>
 ```
+
+Or re-run the installer (which detects that the service is active
+and restarts it if the unit file changed).
 
 ### 6.4 Uninstalling
 
 ```bash
-sudo systemctl disable --now deltabot
-sudo rm /etc/systemd/system/deltabot.service
+sudo systemctl disable --now deltabot-<BOT_NAME>
+sudo rm /etc/systemd/system/deltabot-<BOT_NAME>.service
 sudo systemctl daemon-reload
-```
-
-### 6.5 Creating the unit from scratch (if you don't want to use the bundled one)
-
-```bash
-sudo tee /etc/systemd/system/deltabot.service >/dev/null <<'EOF'
-[Unit]
-Description=Deltachat-Bot-Gatekeeper Service
-After=network.target bluetooth.service
-
-[Service]
-Type=simple
-User=pi
-Group=pi
-WorkingDirectory=/home/pi/gatekeeper-bot
-ExecStart=/home/pi/gatekeeper-bot/start-gatekeeper-bot.sh
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-sudo systemctl daemon-reload
-sudo systemctl enable --now deltabot
 ```
 
 ---
@@ -599,6 +605,8 @@ gatekeeper-bot/
 |-- send-command.sh              (one-shot CLI wrapper around keyblepy, with retry + flock)
 |-- pair-lock.sh                 (interactive BLE bond guide -- run when bond is lost)
 |-- register-user.sh             (one-shot registration wrapper)
+|-- install-systemd-unit.sh      (renders systemd-unit/*.template and
+|                                 installs deltabot-<BOT_NAME>.service)
 |-- keyblepy/                    (Python KeyBLE implementation, submodule)
 |   \-- README.md                (protocol-level docs, Python API)
 |-- apps/                        (webxdc apps -- sources + built artifacts)
@@ -619,7 +627,8 @@ gatekeeper-bot/
 |       |-- vite.config.mjs package.json
 |       \-- public/              (slider images, icon, manifest)
 |-- systemd-unit/
-|   \-- deltabot.service         (sudo cp to /etc/systemd/system/)
+|   \-- deltabot.service.template  (parameterised; rendered by
+|                                   install-systemd-unit.sh)
 \-- venv/                        (Python venv, gitignored)
 ```
 
