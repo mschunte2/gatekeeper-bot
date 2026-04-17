@@ -56,7 +56,9 @@ auto-discovers them on each `/apps` call.
 - **OS** -- Raspberry Pi OS Bookworm or equivalent Debian 12. Python 3.11+.
 - **A Delta Chat account** for the bot. Create it once interactively via
   `deltabot-cli init` (see [deltabot-cli](https://github.com/deltachat-bot/deltabot-cli-py)).
-  The account's SQLite state ends up under `~/.config/gatekeeper/`.
+  The account's SQLite state ends up under `~/.config/<BOT_NAME>/`
+  (the value you set for `BOT_NAME` in `.env`; defaults to
+  `gatekeeper` if unset).
 - **The lock's QR/setup card** (paper insert that came with the Eqiva lock).
   It encodes the MAC, card-key, and serial; you feed the whole string to
   `register-user.sh` as `QR_DATA`.
@@ -538,7 +540,9 @@ is used. The bot relays stderr to the chat for text commands. See
 - The `card-key` embedded in `QR_DATA` is the lock's factory admin secret
   and cannot be rotated without a factory reset. Treat the QR card and
   `register-user.sh` as high-value.
-- The DeltaChat account credentials live in `~/.config/gatekeeper/`. That
+- The DeltaChat account credentials live in `~/.config/<BOT_NAME>/`
+  (see section 10 for the exact path; keyed by `BOT_NAME` in `.env`
+  so two bots on the same host keep separate databases). That
   directory is protected only by filesystem permissions on the Pi.
 - Only chats listed in `ALLOWED_CHATS` can trigger lock operations.
   This single allow-list gates **both** text commands (`/lock`,
@@ -558,7 +562,7 @@ is used. The bot relays stderr to the chat for text commands. See
   so the Delta Chat client renders them silently. They are still
   visible to every member of the chat (the app screen reflects them) --
   do not rely on them as a private channel.
-- App-instance ids cached in `~/.config/gatekeeper/app_msgids.json`
+- App-instance ids cached in `~/.config/<BOT_NAME>/app_msgids.json`
   reveal which chats currently host the app but contain no
   credentials.
 
@@ -600,13 +604,37 @@ gatekeeper-bot/
 \-- venv/                        (Python venv, gitignored)
 ```
 
-Per-deployment state (gitignored, lives outside this tree):
+### Persistent state
 
-- `~/.config/gatekeeper/`         -- Delta Chat account database (root user when
-  the bot runs under the bundled systemd unit)
-- `~/.config/gatekeeper/app_msgids.json`  -- chat-id -> [msgid, …] map the
-  bot uses to push silent state updates to existing app instances
-  (atomic write; safe to delete -- next `/apps` will reseed it).
+Lives outside this tree, on the root filesystem — survives reboots.
+The directory is keyed by `BOT_NAME` (from `.env`), so two bots on
+the same host keep their state separate. Under the bundled systemd
+unit the bot runs as root, so the dir is `/root/.config/<BOT_NAME>/`.
+
+- `~/.config/<BOT_NAME>/`                  -- Delta Chat account database (SQLite).
+  Protected only by filesystem permissions; back up if you care
+  about disaster recovery. See section 9 (Security model) for the
+  trust implications.
+- `~/.config/<BOT_NAME>/app_msgids.json`   -- `{chat_id: {app_id: msgid}}`
+  map that makes `/apps` idempotent (skip apps already in the chat)
+  and lets the bot push silent state updates to existing app
+  instances. Atomic write (`tmp` + `os.replace`). Safe to delete:
+  next `/apps` in each chat reseeds it, and the bot self-migrates
+  the older `{chat_id: [msgid, …]}` shape on startup by dropping
+  legacy entries (logs `"dropping legacy app_msgids entries for
+  chats [..]; run /apps in each chat to re-seed"`) and rewriting
+  the file clean.
+
+### Non-persistent (deliberately in-memory, re-derived on boot)
+
+- Last-known lock state (`locked` / `unlocked` / `unknown`) and
+  battery-low flag -- re-derived by the startup status probe in
+  `_on_start` (`send-command.sh status`).
+- keyblepy BLE session state (session nonces, security counters) --
+  freshly negotiated per BLE connection; the lock discards them
+  too.
+- BLE flock file `/tmp/ble-hci<N>.lock` -- wiped on reboot, recreated
+  on first use.
 
 For a deeper dive into the BLE protocol, encryption layout, and the bugs
 that got fixed in keyblepy, see [`keyblepy/README.md`](./keyblepy/README.md).
