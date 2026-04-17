@@ -142,6 +142,7 @@ def _save_msgids(data: dict[int, list[int]]) -> None:
 
 _msgid_map: dict[int, list[int]] = _load_msgids()
 _last_known_state: str = "unknown"
+_last_battery_low: bool = False
 
 # ----------------------------------------------------------- output parser
 
@@ -149,6 +150,10 @@ _last_known_state: str = "unknown"
 _RESULT_RE = re.compile(r"^\s*device\s+(locked|unlocked|opened)\s*$", re.IGNORECASE)
 # 'device status = {'lock_status': 'LOCKED', ...}' -- handles single/double quotes
 _STATUS_RE = re.compile(r"['\"]?lock_status['\"]?\s*[:=]\s*['\"]?(\w+)", re.IGNORECASE)
+# 'battery_low': True -- parses the battery_low key from the same dict repr.
+_BATTERY_RE = re.compile(
+    r"['\"]?battery_low['\"]?\s*[:=]\s*(True|False|true|false|1|0)"
+)
 
 
 def parse_state_from_output(text: str) -> str | None:
@@ -167,6 +172,20 @@ def parse_state_from_output(text: str) -> str | None:
     return None
 
 
+def parse_battery_low_from_output(text: str) -> bool | None:
+    """Return True/False if the output carries a battery_low field, else None.
+
+    None means "not reported" (e.g. lock/unlock commands, which don't emit
+    a status dict). Callers should preserve the last-known value in that
+    case, not overwrite it with False.
+    """
+    for line in text.splitlines():
+        m = _BATTERY_RE.search(line)
+        if m:
+            return m.group(1).lower() in ("true", "1")
+    return None
+
+
 # ---------------------------------------------------------------- app push
 
 def _push_state(bot, accid: int, state: str) -> int:
@@ -176,7 +195,15 @@ def _push_state(bot, accid: int, state: str) -> int:
     state file may carry leftovers from chats the admin has since
     removed from the allow-list.
     """
-    update = {"payload": {"response": {"name": "bot", "text": state}}}
+    update = {
+        "payload": {
+            "response": {
+                "name": "bot",
+                "text": state,
+                "battery_low": _last_battery_low,
+            }
+        }
+    }
     body = json.dumps(update)
     pushed = 0
     for chatid, msgids in list(_msgid_map.items()):
@@ -272,7 +299,7 @@ def run_lock_command(
 
     Retries and SEC_LEVEL fallback are handled by send-command.sh.
     """
-    global _last_known_state
+    global _last_known_state, _last_battery_low
 
     # Defence-in-depth: also check here, even though every caller already
     # checks the whitelist.
@@ -321,11 +348,27 @@ def run_lock_command(
     else:
         new_state = parse_state_from_output(proc.stdout) or "unknown"
 
+    # Only status output carries battery_low; preserve the cached value
+    # (from the last status probe) for lock/unlock/open.
+    battery_low = parse_battery_low_from_output(proc.stdout)
+    if battery_low is not None:
+        _last_battery_low = battery_low
+
     _last_known_state = new_state
     pushed = _push_state(bot, accid, new_state)
     bot.logger.info(
-        f"send-command.sh {command} -> state={new_state}; pushed to {pushed}"
+        f"send-command.sh {command} -> state={new_state}; "
+        f"battery_low={_last_battery_low}; pushed to {pushed}"
     )
+
+    # Low-battery warning is chat-visible on both paths. Only emit it when
+    # this call freshly observed the flag -- otherwise /lock would echo a
+    # stale warning on every operation.
+    if battery_low:
+        bot.rpc.send_msg(
+            accid, chatid,
+            MsgData(text=f"🪫 {DOOR_NAME}: battery low — please replace batteries"),
+        )
 
     if source_msgid is not None:
         bot.rpc.send_reaction(
@@ -481,7 +524,7 @@ def on_new_message(bot, accid, event):
 
 @cli.on_start
 def _on_start(bot, _args):
-    global _last_known_state
+    global _last_known_state, _last_battery_low
 
     total_instances = sum(len(v) for v in _msgid_map.values())
     bot.logger.info(
@@ -501,9 +544,15 @@ def _on_start(bot, _args):
         )
         if proc.returncode == 0:
             _last_known_state = parse_state_from_output(proc.stdout) or "unknown"
+            battery_low = parse_battery_low_from_output(proc.stdout)
+            if battery_low is not None:
+                _last_battery_low = battery_low
         else:
             _last_known_state = "error"
-        bot.logger.info(f"startup status probe -> {_last_known_state}")
+        bot.logger.info(
+            f"startup status probe -> {_last_known_state}; "
+            f"battery_low={_last_battery_low}"
+        )
     except Exception as ex:
         bot.logger.warning(f"startup status probe failed: {ex}")
         _last_known_state = "unknown"
