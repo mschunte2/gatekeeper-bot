@@ -30,3 +30,7 @@ __pycache__/
 # captured BLE logs if you ever run with --verbose | tee
 log-*.log
 log.txt
+
+# retired apps -- kept in history but not reintroduced into new builds
+quick-unlock/
+quick-unlock.xdc
