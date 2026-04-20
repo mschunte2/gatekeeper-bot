@@ -75,7 +75,7 @@ before invoking its verification `./send-command.sh status` so the
 child can take the same flock.
 
 ### Webxdc replay protection
-Text commands have a 30 s `msg.timestamp` age check. Webxdc button
+Text commands have a 60 s `msg.timestamp` age check. Webxdc button
 presses historically had none (accepted gap), but were found to
 replay stale taps after the bot reconnected from an offline period.
 Apps now embed `ts: Math.floor(Date.now()/1000)` in the request

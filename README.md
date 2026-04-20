@@ -5,24 +5,23 @@
 
 A Raspberry Pi-hosted bridge that operates an **eQ-3 Eqiva Smart Lock** from
 chat. A small Python daemon (`delta-door-bot.py`) listens on a
-[Delta Chat](https://delta.chat/) account. Three control surfaces share
+[Delta Chat](https://delta.chat/) account. Two control surfaces share
 one backend:
 
 - **Text commands** -- send `/lock` / `/unlock` / `/status` from an
   allowed chat. Original behaviour, preserved verbatim.
 - **Gatekeeper webxdc app** -- full lock control inside the chat:
-  closed-lock / open-lock / door buttons, live status icon. Tagged
-  internally as `app: "gatekeeper"`.
-- **Quick-Unlock webxdc app** -- one-tap door opener: opening the app
-  immediately requests `open`. Pin it to your phone's home screen for
-  one-click entry. Tagged internally as `app: "quick-unlock"`.
-- **Quick-Lock webxdc app** -- one-tap door closer: opening the app
-  immediately requests `lock`. No open direction, by design (priority
-  is "after touching this app the lock is closed"). Tap to retry if
-  the lock didn't engage. Tagged internally as `app: "quick-lock"`.
+  closed-lock / open-lock / door buttons, live status icon, "Last
+  update HH:MM" line. Tagged internally as `app: "gatekeeper"`.
 
-All three apps speak the same protocol; the bot doesn't behave
-differently per app (the `app` tag is only logged for debugging).
+A disabled **Quick-Lock** app (built artefact under `apps-disabled/`)
+is still in the tree and can be re-enabled by moving its source +
+`.xdc` back under `apps/`. A previously-shipped **Quick-Unlock** app
+was retired for safety -- a stray tap on a phone home screen should
+not be enough to open a door.
+
+Both apps speak the same protocol; the bot doesn't behave differently
+per app (the `app` tag is only logged for debugging).
 
 All paths converge on `send-command.sh`, which calls
 [`keyblepy`](./keyblepy/) over BLE. State pushes flow back from the
@@ -40,8 +39,8 @@ the change came from an app, a text command, or another allowed chat.
 
 All runtime configuration and secrets live in a single `.env` file at the
 repo root (see `.env.example`). Scripts source `.env` on startup;
-`delta-door-bot.py` reads env vars via `os.environ`. The webxdc apps
-are built into `apps/<id>.xdc` (tracked artifacts -- see
+`delta-door-bot.py` reads env vars via `os.environ`. The active webxdc app is
+built into `apps/<id>.xdc` (tracked artifact -- see
 [Building the apps](#11-building-the-webxdc-apps)). The bot
 auto-discovers them on each `/apps` call.
 
@@ -532,17 +531,18 @@ for background on bonding.
    | `/status`           | current lock state                                |
    | `/lock` / `/zu`     | engage the bolt                                   |
    | `/unlock` / `/auf`  | retract the bolt                                  |
-   | `/apps`             | deliver every `apps/*.xdc` to this chat, **idempotently** -- apps already installed are skipped (state is just refreshed). Currently delivers Gatekeeper + Quick-Lock. |
-   | `/apps reset`       | wipe the bot's tracking for this chat and send every app fresh. Use when a user deleted the old app message locally and wants a clean copy. |
+   | `/apps`             | (re)deliver every `apps/*.xdc` to this chat. Always sends fresh copies and deletes prior tracked copies for all members (so late-joining members also get the app). Also retracts any app whose artefact has been removed from `apps/` (e.g. moved to `apps-disabled/`). Currently delivers Gatekeeper. |
    | `/id`               | show this chat's id (always works, no permission) |
    | anything else       | help text                                         |
 
    Reactions: hourglass on receipt, checkmark on completion, cross if the
-   message is older than 30 s (replay-protection).
+   message is older than 60 s (replay-protection). Webxdc button
+   presses use a client-embedded `ts` and a 45 s window.
 
 ### 7.3 From the webxdc apps
 
-`/apps` drops two apps in the chat:
+`/apps` drops the active app(s) in the chat. Currently only the
+Gatekeeper app is active; Quick-Lock is disabled but still buildable.
 
 #### Gatekeeper (`apps/gatekeeper.xdc`)
 
@@ -555,39 +555,35 @@ small colourful house drawing:
 | open-lock      | `open`         | `send-command.sh open`     |
 | door (centre)  | `status`       | `send-command.sh status`   |
 
-While a command is pending the door button glows yellow and the status
-text shows `Door: locking…` / `opening…` / `checking…`. The icon
-returns to the actual state when the bot's response arrives (or to
-`Door: timeout (no response)` after 60 s).
+While a command is pending the door button glows yellow and the
+status text shows `Door: locking…` / `opening…` / `checking…`. The
+icon returns to the actual state when the bot's response arrives (or
+to `Door: timeout (no response)` after 60 s). A small "Last update
+HH:MM" line (24h local time) below the status shows when the bot
+last confirmed the state.
 
-#### Quick-Unlock (`apps-disabled/quick-unlock.xdc` -- currently disabled)
+#### Quick-Lock (`apps-disabled/quick-lock.xdc` -- currently disabled)
 
-> **Disabled by default.** The .xdc lives in `apps-disabled/` rather
-> than `apps/`, so the bot's `apps/*.xdc` glob does not pick it up
-> and `/apps` will not deliver it. Reason: opening the app sends
-> `open` immediately on launch, with no confirmation -- judged too
-> easy to trigger accidentally (pocket-tap, shortcut misfire) for
-> day-to-day deployment. To re-enable, move the file back into
-> `apps/` (and revert the `outDir` in
-> `apps/quick-unlock/vite.config.mjs` so future rebuilds land in
-> the right place).
+> **Disabled by default.** Both the source (`apps-disabled/quick-lock/`)
+> and the built .xdc live under `apps-disabled/`, so the bot's
+> `apps/*.xdc` glob does not pick it up and `/apps` will not deliver
+> it. To re-enable, move the source directory and the .xdc back under
+> `apps/` and change the source's `vite.config.mjs` `outDir` from
+> `"../../apps-disabled/"` to `"../"`.
 
-Designed to pin to your phone's home screen. **Opening the app
-immediately sends `open`** to the bot -- one tap, door open. The
-slider stays on red ("Closed", starting frame) until the bot acks
-the request, then transitions through orange ("Opening…") to green
-("Open"). Tap the green slider to lock again (green → orange → red);
-tap red to open again. The chat-message preview icon is the green
-"Open" image (the target state for this app).
+Priority: "after touching this app the lock is closed." **Opening the
+app immediately sends `lock`** to the bot. The starting visual is
+orange ("Closing…") so it reads as an explicit "working on it"
+signal, transitioning to red ("Closed") once the bot confirms the
+lock. There is no open direction here -- a tap on a non-closed
+slider only retries the lock command. The chat-message preview icon
+is the red "Closed" image (the target state).
 
-#### Quick-Lock (`apps/quick-lock.xdc`)
-
-Mirror of Quick-Unlock with the priority "after touching this app the
-lock is closed". **Opening the app immediately sends `lock`**. Visual
-goes from green ("Open") through orange ("Closing…") to red
-("Closed"). There is no open direction here -- a tap on a
-non-closed slider only retries the lock command. The chat-message
-preview icon is the red "Closed" image (the target state).
+A previously-shipped **Quick-Unlock** app (a one-tap-unlock mirror
+of Quick-Lock) was retired entirely and is gitignored to prevent
+reintroduction -- one-click unlock from a phone home screen is too
+costly a failure mode. See history before `92b72ec` for its source
+if you need to resurrect it for a different deployment.
 
 #### State updates
 
@@ -603,7 +599,7 @@ Every state-changing app command produces a single concise chat line
 `{icon} {DOOR_NAME} {actor}` in the originating chat:
 
 ```
-🔓 Hoftor Matthias       (opened)
+🟢 Hoftor Matthias       (opened)
 🔒 Hoftor Matthias       (locked)
 ❌ Hoftor Matthias (lock failed)
 ```
@@ -612,8 +608,13 @@ Every state-changing app command produces a single concise chat line
 auto-request it on open / refresh). Text-driven commands keep their
 original output (`device locked` etc.) -- the user's own `/lock`
 message already identifies them. The originating app id (`gatekeeper`
-or `quick-unlock`) is logged at INFO level for debugging but is not
+or `quick-lock`) is logged at INFO level for debugging but is not
 shown to chat members.
+
+The icon pair is `🔒` (closed padlock) / `🟢` (green circle) rather
+than the `🔒`/`🔓` padlock pair -- the two padlocks render near-
+identically at chat-line size on many stacks, and a padlock-vs-
+circle contrast is unambiguous at a glance.
 
 #### Automatic retry and fallback
 
@@ -634,7 +635,7 @@ is used. The bot relays stderr to the chat for text commands. See
 | `./send-command.sh` exits with code 3                       | Another BLE operation in progress. Wait a moment and try again.                                     |
 | `./send-command.sh` exits with code 4                       | BLE adapter not found. Check `ADAPTER_MAC` in `.env` and that the dongle is plugged in.             |
 | `⚠ Bond may be lost` warning in chat                       | The bonded fast path failed; `send-command.sh` fell back to `SEC_LEVEL=low`. Run `./pair-lock.sh`.  |
-| Bot reacts with cross to every command                      | Message older than 30 s. Check network latency or clock skew on the Pi.                             |
+| Bot reacts with cross to every command                      | Message older than 60 s (text) / 45 s (webxdc). Check network latency or clock skew on the Pi.      |
 | Bot replies "permission denied"                             | Chat id not in `ALLOWED_CHATS`. Use `/id`, edit `.env`, restart the service.                        |
 | `MAC mismatch on received frame; dropping` in `--verbose`   | User-key mismatch between `.env` and the lock -- re-register or double-check the hex string.        |
 | `Failed to connect to peripheral ... addr type: public`     | Lock-side issue: someone else is connected, or the lock is advertising slowly. Retry.               |
@@ -700,20 +701,15 @@ gatekeeper-bot/
 |                                 firmware-reload service; one-time)
 |-- keyblepy/                    (Python KeyBLE implementation, submodule)
 |   \-- README.md                (protocol-level docs, Python API)
-|-- apps/                        (webxdc apps -- sources + built artifacts)
+|-- apps/                        (live webxdc app -- source + built artifact)
 |   |-- gatekeeper.xdc           (built artifact, tracked)
+|   \-- gatekeeper/              (full lock-control app source)
+|       |-- index.html main.js main.css
+|       |-- vite.config.mjs package.json
+|       \-- public/              (icon, manifest)
+|-- apps-disabled/               (apps built but NOT served by /apps)
 |   |-- quick-lock.xdc           (built artifact, tracked)
-|-- apps-disabled/               (built artifacts NOT served by /apps)
-|   \-- quick-unlock.xdc         (one-tap unlock, currently disabled)
-|   |-- gatekeeper/              (full lock-control app source)
-|   |   |-- index.html main.js main.css
-|   |   |-- vite.config.mjs package.json
-|   |   \-- public/              (icon, manifest)
-|   |-- quick-unlock/            (one-tap-unlock app source)
-|   |   |-- index.html main.js main.css
-|   |   |-- vite.config.mjs package.json
-|   |   \-- public/              (slider images, icon, manifest)
-|   \-- quick-lock/              (one-tap-lock app source -- inverse of quick-unlock)
+|   \-- quick-lock/              (one-tap-lock app source)
 |       |-- index.html main.js main.css
 |       |-- vite.config.mjs package.json
 |       \-- public/              (slider images, icon, manifest)
@@ -740,14 +736,15 @@ unit the bot runs as `pi`, so the directory is
   about disaster recovery. See section 9 (Security model) for the
   trust implications.
 - `~/.config/<BOT_NAME>/app_msgids.json`   -- `{chat_id: {app_id: msgid}}`
-  map that makes `/apps` idempotent (skip apps already in the chat)
-  and lets the bot push silent state updates to existing app
-  instances. Atomic write (`tmp` + `os.replace`). Safe to delete:
-  next `/apps` in each chat reseeds it, and the bot self-migrates
-  the older `{chat_id: [msgid, …]}` shape on startup by dropping
-  legacy entries (logs `"dropping legacy app_msgids entries for
-  chats [..]; run /apps in each chat to re-seed"`) and rewriting
-  the file clean.
+  map the bot uses to find prior copies of each app in each chat
+  so `/apps` can delete the old message for all members after sending
+  a fresh one, and so the bot can push silent state updates to the
+  current instance. Atomic write (`tmp` + `os.replace`). Safe to
+  delete: next `/apps` in each chat reseeds it. The bot self-
+  migrates the older `{chat_id: [msgid, …]}` shape on startup by
+  dropping legacy entries (logs `"dropping legacy app_msgids
+  entries for chats [..]; run /apps in each chat to re-seed"`) and
+  rewriting the file clean.
 
 ### Non-persistent (deliberately in-memory, re-derived on boot)
 
@@ -767,16 +764,17 @@ that got fixed in keyblepy, see [`keyblepy/README.md`](./keyblepy/README.md).
 
 ## 11. Building the webxdc apps
 
-You only need to rebuild if you change something under an `apps/<id>/`
+You only need to rebuild if you change something under an app's
 source directory. The repo ships pre-built artifacts
-(`apps/gatekeeper.xdc`, `apps/quick-lock.xdc`, and
-`apps-disabled/quick-unlock.xdc`) so a fresh deploy doesn't require
-Node.js on the Pi.
+(`apps/gatekeeper.xdc`, `apps-disabled/quick-lock.xdc`) so a fresh
+deploy doesn't require Node.js on the Pi.
 
 ### 11.1 Prerequisites
 
-- Node.js 18+ and `npm` (only on the build machine -- not needed on
-  the Pi if the `.xdc` artifacts are already committed).
+- **Node.js 22+** and `npm` on the build machine (newer vite deps
+  pull in `rolldown`, which imports `node:util.styleText`, missing
+  on Node 18). Not needed on the Pi if the `.xdc` artifacts are
+  already committed.
 
 ### 11.2 Build
 
@@ -785,19 +783,17 @@ cd apps/gatekeeper
 npm install      # one-time
 npm run build    # writes ../gatekeeper.xdc
 
-cd ../quick-unlock
+cd ../../apps-disabled/quick-lock
 npm install      # one-time
-npm run build    # writes ../../apps-disabled/quick-unlock.xdc  # currently disabled
-
-cd ../quick-lock
-npm install      # one-time
-npm run build    # writes ../quick-lock.xdc
+npm run build    # writes ../quick-lock.xdc  (disabled app, stays in apps-disabled/)
 ```
 
-Each `vite.config.mjs` sets its own `outDir` in the `buildXDC` plugin
-call. Most apps write to `apps/` (served by `/apps`); the
-`quick-unlock` config points at `apps-disabled/` instead, because
-that app is currently disabled -- see section 7.3.
+Each `vite.config.mjs` sets its own `outDir` in the `buildXDC`
+plugin call. The live app (`gatekeeper`) writes to `apps/` -- the
+bot's `apps/*.xdc` glob picks it up and serves it via `/apps`. The
+disabled app (`quick-lock`) writes to `apps-disabled/`, out of the
+bot's scan path. To re-enable it, move both the source directory
+and the .xdc back under `apps/` and change `outDir` to `"../"`.
 
 ### 11.3 What the apps share
 
