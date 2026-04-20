@@ -176,6 +176,7 @@ def _save_msgids(data: dict[int, dict[str, int]]) -> None:
 
 _msgid_map: dict[int, dict[str, int]] = _load_msgids()
 _last_known_state: str = "unknown"
+_last_state_ts: int = 0   # Unix seconds; 0 = never set
 _last_battery_low: bool = False
 
 # ----------------------------------------------------------- output parser
@@ -235,6 +236,7 @@ def _push_state(bot, accid: int, state: str) -> int:
                 "name": "bot",
                 "text": state,
                 "battery_low": _last_battery_low,
+                "ts": _last_state_ts,
             }
         }
     }
@@ -377,7 +379,7 @@ def run_lock_command(
 
     Retries and SEC_LEVEL fallback are handled by send-command.sh.
     """
-    global _last_known_state, _last_battery_low
+    global _last_known_state, _last_state_ts, _last_battery_low
 
     # Defence-in-depth: also check here, even though every caller already
     # checks the whitelist.
@@ -433,6 +435,7 @@ def run_lock_command(
         _last_battery_low = battery_low
 
     _last_known_state = new_state
+    _last_state_ts = int(time.time())
     pushed = _push_state(bot, accid, new_state)
     bot.logger.info(
         f"send-command.sh {command} -> state={new_state}; "
@@ -535,8 +538,12 @@ def on_webxdc_update(bot, accid, event):
             try:
                 bot.rpc.send_webxdc_status_update(
                     accid, msgid,
-                    json.dumps({"payload": {"response": {"name": "bot",
-                                                         "text": _last_known_state}}}),
+                    json.dumps({"payload": {"response": {
+                        "name": "bot",
+                        "text": _last_known_state,
+                        "battery_low": _last_battery_low,
+                        "ts": _last_state_ts,
+                    }}}),
                     "",
                 )
             except Exception as ex:
@@ -670,7 +677,7 @@ def on_new_message(bot, accid, event):
 
 @cli.on_start
 def _on_start(bot, _args):
-    global _last_known_state, _last_battery_low
+    global _last_known_state, _last_state_ts, _last_battery_low
 
     total_instances = sum(len(v) for v in _msgid_map.values())
     bot.logger.info(
@@ -695,6 +702,7 @@ def _on_start(bot, _args):
                 _last_battery_low = battery_low
         else:
             _last_known_state = "error"
+        _last_state_ts = int(time.time())
         bot.logger.info(
             f"startup status probe -> {_last_known_state}; "
             f"battery_low={_last_battery_low}"
@@ -702,6 +710,7 @@ def _on_start(bot, _args):
     except Exception as ex:
         bot.logger.warning(f"startup status probe failed: {ex}")
         _last_known_state = "unknown"
+        _last_state_ts = int(time.time())
 
     # Push door_name + state to every known instance in an allowed chat
     # (silent, info=""). _push_state already filters; do the same here.

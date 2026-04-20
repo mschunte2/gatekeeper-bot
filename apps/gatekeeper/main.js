@@ -34,6 +34,14 @@ const statusEl = document.getElementById("status");
 const statusText = document.getElementById("statusText");
 const doorNameEl = document.getElementById("doorName");
 const deviceNameEl = document.getElementById("deviceName");
+const lastUpdateEl = document.getElementById("lastUpdate");
+
+function fmtHHMM(ts) {
+  if (!Number.isFinite(ts) || ts <= 0) return "";
+  const d = new Date(ts * 1000);
+  return String(d.getHours()).padStart(2, "0") + ":" +
+         String(d.getMinutes()).padStart(2, "0");
+}
 
 let _pendingTimer = null;
 
@@ -118,6 +126,8 @@ window.webxdc.setUpdateListener((update) => {
       setDoorState(text);
       _gotState = true;
     }
+    const hhmm = fmtHHMM(Number(resp.ts));
+    if (hhmm) lastUpdateEl.textContent = "Last update " + hhmm;
   }
 });
 

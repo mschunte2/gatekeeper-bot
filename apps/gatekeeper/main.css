@@ -134,6 +134,11 @@ h1 {
   background: #c0392b;
 }
 
+.lastUpdate {
+  margin: 0.25rem 0 0;
+  color: #777;
+}
+
 .door-pos.locked {
   border-color: #c0392b;
 }

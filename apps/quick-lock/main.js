@@ -34,10 +34,18 @@ const statusEl = document.getElementById("status");
 const statusText = document.getElementById("statusText");
 const doorNameEl = document.getElementById("doorName");
 const deviceNameEl = document.getElementById("deviceName");
+const lastUpdateEl = document.getElementById("lastUpdate");
+
+function fmtHHMM(ts) {
+  if (!Number.isFinite(ts) || ts <= 0) return "";
+  const d = new Date(ts * 1000);
+  return String(d.getHours()).padStart(2, "0") + ":" +
+         String(d.getMinutes()).padStart(2, "0");
+}
 
 let _pendingTimer = null;
 let _pendingLabel = ""; // shown once the bot acks the request
-let _currentState = "open";
+let _currentState = "closing";
 // On app load the bot's status-update queue may already contain stale
 // ack/response payloads from previous sessions. We want the visual to
 // start at green regardless and only follow updates that belong to the
@@ -107,7 +115,7 @@ function send(command, label) {
 // queued callbacks synchronously, which would otherwise overwrite the
 // just-set state).
 setDoorName(DEFAULT_DOOR_NAME);
-setState("open"); // green "starting point"
+setState("closing"); // orange "in progress" while we fire /lock on open
 deviceNameEl.textContent = "You are: " + window.webxdc.selfName;
 
 window.webxdc.setUpdateListener((update) => {
@@ -127,6 +135,8 @@ window.webxdc.setUpdateListener((update) => {
     const text = (resp.text || "").trim().toLowerCase();
     const mapped = RESP_TO_STATE[text];
     if (mapped) setState(mapped);
+    const hhmm = fmtHHMM(Number(resp.ts));
+    if (hhmm) lastUpdateEl.textContent = "Last update " + hhmm;
   }
 });
 

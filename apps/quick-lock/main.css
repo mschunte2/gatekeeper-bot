@@ -56,3 +56,8 @@ h1 {
 .status.open    { background: #e6f4ea; color: #1e6f24; }
 .status.closed  { background: #fdecea; color: #8b1f1f; }
 .status.closing { background: #fff3e0; color: #7a3500; }
+
+.lastUpdate {
+  margin: 0.25rem 0 0;
+  color: #777;
+}
