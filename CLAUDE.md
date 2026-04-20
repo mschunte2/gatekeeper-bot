@@ -13,7 +13,7 @@ app interactions into BLE lock operations via `send-command.sh` →
 ```
 DeltaChat user
   ├── text commands (/lock, /unlock, /status, /apps, /id)
-  └── webxdc apps (gatekeeper, quick-unlock, quick-lock)
+  └── webxdc app (gatekeeper; quick-lock is built-but-disabled)
         │
         ▼
 delta-door-bot.py (deltabot-cli + deltachat2)
@@ -74,62 +74,90 @@ send-command.sh` for recovery). `pair-lock.sh` calls `release_ble_lock`
 before invoking its verification `./send-command.sh status` so the
 child can take the same flock.
 
-### Webxdc replay protection gap (accepted)
-Text commands have a 30 s `msg.timestamp` age check. Webxdc status
-updates do NOT — the user is interactively tapping a button, so replay
-is not a realistic threat. This was discussed and accepted during the
-initial design review.
+### Webxdc replay protection
+Text commands have a 30 s `msg.timestamp` age check. Webxdc button
+presses historically had none (accepted gap), but were found to
+replay stale taps after the bot reconnected from an offline period.
+Apps now embed `ts: Math.floor(Date.now()/1000)` in the request
+payload; `on_webxdc_update` drops commands with age > 45 s before
+acking or firing BLE. Apps built before this feature have no `ts`
+field -- the bot accepts those with a log line so older installed
+instances still work until users run `/apps` to pick up the new
+build (soft migration).
 
-### Colour semantics in quick-unlock / quick-lock apps
-Green = open (target state for quick-unlock). Red = closed (target
-state for quick-lock). This is REVERSED from the source slider images
-where green originally meant "locked". The images were recoloured
-with ImageMagick to match the user's preferred semantics.
+### Colour semantics in quick-lock app (disabled but still buildable)
+Green = open, red = closed, orange = in-progress. REVERSED from the
+original source slider images where green meant "locked"; recoloured
+with ImageMagick to match this scheme. quick-lock opens in orange
+(pending) and settles on red once the bot confirms the lock -- the
+starting visual is an explicit "working on it" signal rather than a
+claim about current state.
+
+(quick-unlock was retired for safety -- a stray tap on a phone home
+screen shouldn't be enough to open a door. One-tap lock is cheap
+failure; one-tap unlock is costly failure.)
 
 ### Bot ack protocol
 When the bot receives a webxdc command, it pushes `{payload: {ack: cmd}}`
 to all app instances BEFORE running `send-command.sh`. Apps that care
-(quick-unlock, quick-lock) use this to transition from the starting
-visual to the orange "in progress" visual at the right moment. Apps
-that don't care (gatekeeper) ignore it. The ack is NOT a confirmation
-that the lock operated — just that the bot received the command.
+(quick-lock) use this to transition from the starting visual to the
+orange "in progress" visual at the right moment. Apps that don't care
+(gatekeeper) ignore it. The ack is NOT a confirmation that the lock
+operated — just that the bot received the command.
 
-### _ready flag in quick-unlock / quick-lock
-On app open, `setUpdateListener` may deliver queued status updates from
-previous sessions. Without guarding, these overwrite the starting
-visual (red for quick-unlock, green for quick-lock) before the
-auto-open/lock fires. The `_ready` flag blocks ack/response processing
-until the auto-command has been sent. Config updates (door_name) are
-always allowed through.
+### _ready flag in quick-lock
+On app open, `setUpdateListener` may deliver queued status updates
+from previous sessions. Without guarding, these overwrite the
+starting visual before the auto-lock fires. The `_ready` flag blocks
+ack/response processing until the auto-command has been sent. Config
+updates (door_name) are always allowed through.
 
 ### Audit line format
 App-driven commands produce `{icon} {DOOR_NAME} {actor_name}` in the
-originating chat (e.g. "🔓 Hoftor Matthias"). Status checks are
-silent (read-only, auto-requested on app open). Text commands echo
-raw subprocess output instead (the user's own message already
-identifies them).
+originating chat (e.g. "🟢 Hoftor Matthias"). Icons are 🔒 for lock
+and 🟢 for unlock/open -- chosen over 🔒/🔓 because the padlock pair
+is visually near-identical at chat-line size on many rendering
+stacks; padlock-vs-green-circle is unambiguous at a glance. Status
+checks are silent (read-only, auto-requested on app open). Text
+commands echo raw subprocess output instead (the user's own message
+already identifies them).
 
-### App discovery and idempotent /apps
+Apps also render "Last update HH:MM" (24h local time) below the
+status icon, filled from the `ts` field in the response payload.
+The bot maintains `_last_state_ts` alongside `_last_known_state`,
+updating both in `run_lock_command` and the startup status probe.
+
+### App discovery and /apps as always-resend
 `delta-door-bot.py` scans `apps/*.xdc` on each `/apps` call. No
 hard-coded list. Dropping a new `<id>.xdc` into `apps/` is enough.
 
-`/apps` is **idempotent**: the bot persists `chat_id → {app_id → msgid}`
-in `~/.config/<BOT_NAME>/app_msgids.json`, and on each call only sends
-apps that aren't already installed in this chat (for live ones, it
-refreshes state via `_push_state` but doesn't resend the binary).
-`/apps reset` wipes the tracking for the chat and sends every app
-fresh -- the escape hatch for "I deleted the old message locally."
-Liveness of a tracked msgid is verified with `bot.rpc.get_message`;
-if it raises, the app is treated as deleted and re-sent.
+`/apps` **always sends** every discovered app and deletes the
+chat's prior tracked msgid for that app via `delete_messages_for_
+all` after a successful send. The chat ends up with exactly one
+current copy per app. Rationale: Delta Chat doesn't backfill
+attachments to new chat members, so "already installed" tracking
+would leave late joiners without any app -- always-resend onboards
+everyone currently in the chat.
 
-`apps-disabled/` exists for built artifacts that we deliberately do
-not serve (currently: `quick-unlock.xdc`, judged too easy to trigger
-accidentally on phone home-screens). The bot's glob never reaches
-that folder, so just moving an .xdc in/out of `apps/` toggles
-availability without code changes. The matching source dirs (e.g.
-`apps/quick-unlock/`) stay in `apps/` -- only the *built artifact*
-moves -- and their `vite.config.mjs` `outDir` should match the
-artifact's intended location.
+Tracking shape: `chat_id → {app_id → msgid}` in
+`~/.config/<BOT_NAME>/app_msgids.json`, used only to know which
+prior msgid to delete. Send-first-then-delete so a failed delete
+never leaves the chat with no app. There is no `/apps reset` --
+the always-send model is self-healing.
+
+**Retract**: any tracked `app_id` whose artifact no longer exists
+under `apps/*.xdc` (e.g. moved to `apps-disabled/`, renamed,
+removed) gets its old msgid deleted for all chat members and
+dropped from tracking on the next `/apps`. This means "unpublish"
+through the filesystem cleanly withdraws the app from every chat.
+
+`apps-disabled/` holds apps we currently don't serve. Unlike the
+earlier convention (only the built .xdc moved), the source tree
+now moves alongside the artifact: e.g. `apps-disabled/quick-lock/`
++ `apps-disabled/quick-lock.xdc`. The source's `vite.config.mjs`
+`outDir` is `"../../apps-disabled/"` so rebuilds land in the same
+directory. To re-enable an app, move both the source dir and the
+.xdc back under `apps/` and adjust `outDir` to `"../"`.
 
 ## Protocol: bot ↔ webxdc apps
 
@@ -138,15 +166,24 @@ affect routing.
 
 ### App → bot
 ```json
-{"payload": {"request": {"name": "Alice", "text": "lock", "app": "gatekeeper"}}}
+{"payload": {"request": {"name": "Alice", "text": "lock",
+                         "app": "gatekeeper", "ts": 1713600000}}}
 ```
-`text` is whitelisted against `{lock, unlock, open, status}`.
+`text` is whitelisted against `{lock, unlock, open, status}`. `ts`
+is Unix seconds; commands older than 45 s are dropped (replay
+protection). Missing `ts` is accepted with a log line (soft migration
+for old installed apps).
 
 ### Bot → app (state)
 ```json
-{"payload": {"response": {"name": "bot", "text": "locked"}}}
+{"payload": {"response": {"name": "bot", "text": "locked",
+                          "battery_low": false, "ts": 1713600000}}}
 ```
-`text` is one of: `locked`, `unlocked`, `unknown`, `error`.
+`text` is one of: `locked`, `unlocked`, `unknown`, `error`. `ts` is
+the Unix seconds when the bot last confirmed that state. Apps render
+it as "Last update HH:MM" (24h local time). `_push_state` broadcasts
+to every app instance in every allowed chat, so a single state
+change propagates everywhere.
 
 ### Bot → app (config)
 ```json
@@ -175,12 +212,12 @@ lib/common.sh              sourced helper: .env load, venv, adapter,
 .env.example               template
 apps/
   gatekeeper.xdc           built artifact (tracked)
-  quick-lock.xdc           built artifact (tracked)
   gatekeeper/              full lock-control app source
-  quick-unlock/            one-tap unlock app source
-  quick-lock/              one-tap lock app source
-apps-disabled/             built artifacts NOT served by /apps
-  quick-unlock.xdc         currently disabled (dangerous one-tap open)
+apps-disabled/             apps we build but do NOT serve via /apps
+  quick-lock.xdc           built artifact (tracked)
+  quick-lock/              one-tap lock app source (outDir points here)
+                           quick-unlock was retired entirely -- gitignored
+                           to prevent accidental re-entry
 keyblepy/                  BLE protocol implementation (git submodule)
 systemd-unit/              service file
 ```
@@ -239,9 +276,9 @@ systemd-unit/              service file
 ## Two-bot setup (deployed)
 
 Two gatekeeper-bot instances run on the Pi sharing one BLE adapter:
-- `/home/pi/gatekeeper-hoftor/` → `deltabot-hoftor.service` →
-  Hoftor lock (LOCK_MAC `00:1a:22:1b:ae:ac`).
-- `/home/pi/gatekeeper-km/` → `deltabot-km.service` →
+- `/home/pi/gatekeeper-hoftor/` → `deltabot-gatekeeper-hoftor.service`
+  → Hoftor lock (LOCK_MAC `00:1a:22:1b:ae:ac`).
+- `/home/pi/gatekeeper-km/` → `deltabot-gatekeeper-km.service` →
   Kulturmetzgerei lock (LOCK_MAC `00:1A:22:1B:AF:3E`).
 - Each bot has its own `.env` with distinct `LOCK_MAC`, `BOT_NAME`,
   `USER_ID`, `USER_KEY`, `DOOR_NAME`, `ALLOWED_CHATS`.
@@ -262,10 +299,15 @@ systemd unit and no `.env`.
 
 ## Build system
 
-Apps are built with vite (Node.js 18+). Each app under `apps/<id>/`
-has its own `vite.config.mjs` that outputs `apps/<id>.xdc`. The bot
-discovers apps by globbing `apps/*.xdc` — no hard-coded list. After
-rebuilding, commit the updated `.xdc` so deploys don't need Node.
+Apps are built with vite (**Node.js 22+** required -- newer vite
+deps pull in `rolldown`, which imports `node:util.styleText`,
+missing on Node 18). Each app has its own `vite.config.mjs` under
+its source dir. For live apps (`apps/<id>/`) outDir is `"../"` so
+the artifact lands at `apps/<id>.xdc`; for disabled apps
+(`apps-disabled/<id>/`) outDir is `"../../apps-disabled/"` for the
+same effect one level over. The bot discovers apps by globbing
+`apps/*.xdc` — no hard-coded list. After rebuilding, commit the
+updated `.xdc` so deploys don't need Node.
 
 ## Deployment
 
@@ -275,19 +317,21 @@ on each venv's `bluepy-helper`; `lib/common.sh:cleanup_ble` silently
 no-ops under non-root, so adapter-wedging recovery is a manual
 `sudo ./send-command.sh status`). Previously ran under root
 (needed for BLE raw-HCI access). Two units are currently active:
-`deltabot-hoftor.service` (from `/home/pi/gatekeeper-hoftor/`) and
-`deltabot-km.service` (from `/home/pi/gatekeeper-km/`). Both use
-the same generic template `systemd-unit/deltabot.service` -- it's
-copied per-bot under `/etc/systemd/system/deltabot-<name>.service`
+`deltabot-gatekeeper-hoftor.service` (from
+`/home/pi/gatekeeper-hoftor/`) and `deltabot-gatekeeper-km.service`
+(from `/home/pi/gatekeeper-km/`). Both use the same generic
+template `systemd-unit/deltabot.service` -- it's copied per-bot
+under `/etc/systemd/system/deltabot-gatekeeper-<name>.service`
 with the matching `WorkingDirectory` and `Description`. A third
 clone `/home/pi/gatekeeper-bot-original/` exists as a clean
 reference but has no unit/`.env`.
 
 Each Pi-side clone has `origin` pointing at
 `https://github.com/mschunte2/gatekeeper-bot.git` and
-`submodule.recurse = true`, so a plain `git pull` as user `pi` pulls
-the parent and the `keyblepy` submodule in one shot; a subsequent
-`sudo systemctl restart deltabot-hoftor` reloads the Python process.
+`submodule.recurse = true`, so a plain `git pull` as user `pi`
+pulls the parent and the `keyblepy` submodule in one shot; a
+subsequent `sudo systemctl restart deltabot-gatekeeper-hoftor`
+reloads the Python process.
 
 GitHub is the canonical deployment source, not a squashed mirror. It
 currently carries the granular dev history (force-pushed from the dev
