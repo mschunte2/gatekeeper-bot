@@ -82,6 +82,7 @@ _AUDIT_VERB = {
 }
 
 MAX_AGE_SECONDS = 30  # text-message replay-protection window
+MAX_APP_AGE_SECONDS = 45  # webxdc button-press replay-protection window
 
 # Strip control chars / newlines from values that arrive over the wire
 # and might end up in log lines or chat messages.
@@ -520,9 +521,9 @@ def on_webxdc_update(bot, accid, event):
     if msgid not in chat_apps.values():
         learned_id: str | None = None
         for attr in ("file_name", "filename"):
-            name = getattr(msg, attr, None)
-            if isinstance(name, str) and name.endswith(".xdc"):
-                learned_id = Path(name).stem
+            fname = getattr(msg, attr, None)
+            if isinstance(fname, str) and fname.endswith(".xdc"):
+                learned_id = Path(fname).stem
                 break
         if learned_id:
             chat_apps[learned_id] = msgid
@@ -549,6 +550,26 @@ def on_webxdc_update(bot, accid, event):
     if cmd not in VALID_COMMANDS:
         bot.logger.warning(f"refusing webxdc command {cmd!r}")
         return
+
+    # Replay protection: drop stale button presses that arrive after
+    # the bot reconnects from an offline period. Apps built before
+    # this feature don't send `ts` -- accept those with a log line so
+    # users can re-install via /apps reset on their own schedule.
+    ts = req.get("ts")
+    if isinstance(ts, (int, float)):
+        age = int(time.time()) - int(ts)
+        if age > MAX_APP_AGE_SECONDS:
+            bot.logger.info(
+                f"app cmd {cmd!r} from chat {chatid} ({name} via {app_id}) "
+                f"age={age}s > {MAX_APP_AGE_SECONDS}s -> ignored"
+            )
+            return
+    else:
+        bot.logger.info(
+            f"app cmd {cmd!r} from chat {chatid} ({name} via {app_id}) "
+            f"has no ts field -- accepting (app predates replay protection; "
+            f"suggest /apps reset)"
+        )
 
     # Tell apps "command received, working on it" before the BLE
     # round-trip blocks the event loop for several seconds. Apps that

@@ -83,6 +83,7 @@ function send(command) {
           name: window.webxdc.selfName,
           text: command,
           app: APP_ID,
+          ts: Math.floor(Date.now() / 1000),
         },
       },
     },
