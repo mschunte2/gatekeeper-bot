@@ -76,8 +76,8 @@ VALID_COMMANDS = {"lock", "unlock", "open", "status"}
 # (emoji, past-tense verb) -- used as: "{emoji} {DOOR_NAME} {verb} by {name}"
 _AUDIT_VERB = {
     "lock": ("🔒", "locked"),
-    "unlock": ("🔓", "unlocked"),
-    "open": ("🔓", "opened"),
+    "unlock": ("🟢", "unlocked"),
+    "open": ("🟢", "opened"),
     "status": ("ℹ️", "status checked"),
 }
 
