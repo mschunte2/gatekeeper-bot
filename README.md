@@ -174,6 +174,7 @@ $EDITOR .env
 | `ALLOWED_CHATS`   | Comma-separated Delta Chat chat-ids that may operate the lock. Gates **both** text commands (`/lock`, `/unlock`, `/status`) **and** the webxdc app -- chats in this list automatically receive the app and may use either path. `/id` is the only command that bypasses this check (so you can discover chat ids during setup). Empty = nobody. See section 6. |
 | `DOOR_NAME`       | Display name shown as the heading inside the webxdc app (e.g. `"Front Gate"`). Pushed silently to every active app instance on startup. Default: `Door`. |
 | `HELP_MESSAGE`    | Optional override for the bot's help text (multi-line supported). Empty = a sensible English default. Put your contact info / localized aliases / extra commands here. |
+| `LOG_LEVEL`       | Bot log level passed to deltabot-cli as `--logging`. One of `trace` / `debug` / `info` / `warning` / `error`. Default `info`. Use `debug` while stabilising a change -- the `log_event` hook (every raw Delta Chat core event) logs at DEBUG, so only `debug` surfaces it. Flip back to `info` (or remove the line) once the journal gets too chatty. |
 
 ---
 

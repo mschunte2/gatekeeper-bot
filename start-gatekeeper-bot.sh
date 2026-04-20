@@ -5,4 +5,4 @@ set -e
 cd "$(dirname "$0")"
 set -a; source ./.env; set +a
 source ./venv/bin/activate
-exec python3 ./delta-door-bot.py serve
+exec python3 ./delta-door-bot.py --logging "${LOG_LEVEL:-info}" serve

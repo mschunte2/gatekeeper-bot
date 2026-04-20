@@ -438,7 +438,16 @@ def run_lock_command(
             f"send-command.sh {command} rc={proc.returncode}"
         )
     else:
-        new_state = parse_state_from_output(proc.stdout) or "unknown"
+        parsed = parse_state_from_output(proc.stdout)
+        if parsed is None:
+            bot.logger.warning(
+                f"send-command.sh {command} rc=0 but state parse returned "
+                f"None; raw stdout:\n{proc.stdout.strip()}\n"
+                f"---stderr---\n{proc.stderr.strip()}"
+            )
+            new_state = "unknown"
+        else:
+            new_state = parsed
 
     # Only status output carries battery_low; preserve the cached value
     # (from the last status probe) for lock/unlock/open.
@@ -479,7 +488,10 @@ def _is_allowed(chatid: int) -> bool:
 
 @cli.on(events.RawEvent)
 def log_event(bot, accid, event):
-    bot.logger.info(event)
+    # Every Delta Chat core event at DEBUG -- useful when tracing an
+    # issue end-to-end, but floods the journal at INFO. Run with
+    # LOG_LEVEL=debug in .env when you need the full firehose.
+    bot.logger.debug(event)
 
 
 @cli.on(events.RawEvent)
@@ -690,7 +702,16 @@ def _on_start(bot, _args):
             stderr=subprocess.PIPE,
         )
         if proc.returncode == 0:
-            _last_known_state = parse_state_from_output(proc.stdout) or "unknown"
+            parsed = parse_state_from_output(proc.stdout)
+            if parsed is None:
+                bot.logger.warning(
+                    f"startup status probe rc=0 but state parse returned "
+                    f"None; raw stdout:\n{proc.stdout.strip()}\n"
+                    f"---stderr---\n{proc.stderr.strip()}"
+                )
+                _last_known_state = "unknown"
+            else:
+                _last_known_state = parsed
             battery_low = parse_battery_low_from_output(proc.stdout)
             if battery_low is not None:
                 _last_battery_low = battery_low
