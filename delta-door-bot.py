@@ -46,8 +46,7 @@ DEFAULT_HELP_MESSAGE = (
     " /lock or /zu - locks gate\n"
     " /unlock or /auf - unlocks gate\n"
     " /status - print current status\n"
-    " /apps - deliver webxdc control apps (idempotent; skips apps already in this chat)\n"
-    " /apps reset - wipe tracking and send every app fresh\n"
+    " /apps - (re)deliver webxdc control apps; replaces prior copies so late-joining chat members get a fresh install\n"
     " /id - get this chat's id\n"
     " - Any other input shows this message.\n"
     " NOTE: lock operations can take up to 90 seconds."
@@ -287,76 +286,89 @@ def _push_ack(bot, accid: int, cmd: str) -> int:
 
 
 def _send_apps(
-    bot, accid: int, chatid: int, *, force: bool = False
+    bot, accid: int, chatid: int
 ) -> tuple[list[str], list[str]]:
-    """Idempotently deliver every available .xdc to `chatid`.
+    """Deliver every available .xdc to `chatid`, replacing prior copies.
 
-    For each app discovered in `apps/*.xdc`:
-      * if this chat already has a *live* instance of that app (tracked
-        in `_msgid_map` and `bot.rpc.get_message` doesn't raise), skip
-        the binary resend -- the end-of-function `_push_state` still
-        refreshes the UI;
-      * otherwise send the .xdc, store the new msgid under its app_id.
+    For each app discovered in `apps/*.xdc`: send the file, then after
+    a successful send delete the chat's prior tracked msgid (if any)
+    via `delete_messages_for_all` so the chat ends up with exactly one
+    current copy per app.
 
-    When `force=True`, the tracked dict for this chat is wiped up front
-    and everything is re-sent. Used by `/apps reset`.
+    Also retracts apps that used to be in `apps/*.xdc` but no longer
+    are (e.g. moved to `apps-disabled/`): their tracked msgids are
+    deleted for all chat members and dropped from tracking.
 
-    Returns `(sent, refreshed)` -- lists of app_ids in each bucket,
-    suitable for assembling a human-readable reply.
+    Why unconditional send: new chat members don't receive historical
+    attachments, so an idempotent "skip if tracked" path would leave
+    late joiners without any app. Sending every time (and deleting the
+    prior) keeps everyone currently in the chat with exactly one fresh
+    copy.
+
+    Returns `(sent, retracted)` -- lists of app_ids in each bucket,
+    for assembling a human-readable reply.
     """
     sent: list[str] = []
-    refreshed: list[str] = []
+    retracted: list[str] = []
     paths = _xdc_paths()
-    if not paths:
-        bot.logger.warning(f"no .xdc files found in {APPS_DIR}; nothing to send")
-        return sent, refreshed
-
-    if force:
-        _msgid_map.pop(chatid, None)
 
     chat_apps = _msgid_map.setdefault(chatid, {})
+    available_ids = {app_id for app_id, _ in paths}
+
+    # Retract tracked apps that no longer exist in apps/ (e.g. admin
+    # moved the built artefact to apps-disabled/ to unpublish it).
+    for app_id in list(chat_apps.keys()):
+        if app_id in available_ids:
+            continue
+        old_msgid = chat_apps.pop(app_id)
+        try:
+            bot.rpc.delete_messages_for_all(accid, [old_msgid])
+            retracted.append(app_id)
+            bot.logger.info(
+                f"retracted app {app_id!r} from chat {chatid} "
+                f"(msgid {old_msgid} deleted; no longer in apps/)"
+            )
+        except Exception as ex:
+            bot.logger.warning(
+                f"retract app {app_id!r} msgid {old_msgid} in chat {chatid} "
+                f"failed: {ex}"
+            )
+
+    if not paths:
+        bot.logger.warning(f"no .xdc files found in {APPS_DIR}; nothing to send")
+        if retracted:
+            _save_msgids(_msgid_map)
+        return sent, retracted
 
     for app_id, path in paths:
-        existing = chat_apps.get(app_id)
-        live = False
-        if existing is not None:
-            try:
-                # get_message raises for an unknown / deleted msgid.
-                bot.rpc.get_message(accid, existing)
-                live = True
-            except Exception as ex:
-                bot.logger.info(
-                    f"tracked msgid {existing} for app {app_id!r} in chat "
-                    f"{chatid} no longer available ({ex}); re-sending"
-                )
-
-        if live:
-            # Keep the existing instance; refresh its door_name so any
-            # env change since last /apps propagates. State refresh
-            # happens uniformly via _push_state below.
-            _push_door_name(bot, accid, existing)
-            refreshed.append(app_id)
-            bot.logger.info(
-                f"app {app_id!r} already in chat {chatid} msgid={existing}; skipping resend"
-            )
-            continue
-
+        old_msgid = chat_apps.get(app_id)
         try:
-            msgid = int(bot.rpc.send_msg(accid, chatid, MsgData(file=path)))
+            new_msgid = int(bot.rpc.send_msg(accid, chatid, MsgData(file=path)))
         except Exception as ex:
             bot.logger.error(f"send app {app_id!r} to chat {chatid} failed: {ex}")
             continue
-        chat_apps[app_id] = msgid
+        chat_apps[app_id] = new_msgid
         sent.append(app_id)
-        bot.logger.info(f"app {app_id!r} sent to chat {chatid} msgid={msgid}")
-        _push_door_name(bot, accid, msgid)
+        bot.logger.info(f"app {app_id!r} sent to chat {chatid} msgid={new_msgid}")
+        _push_door_name(bot, accid, new_msgid)
+        # Delete the prior copy only AFTER the new one is in the chat,
+        # so a delete failure never leaves the chat with no app.
+        if old_msgid is not None:
+            try:
+                bot.rpc.delete_messages_for_all(accid, [old_msgid])
+                bot.logger.info(
+                    f"deleted prior {app_id!r} msgid {old_msgid} in chat {chatid}"
+                )
+            except Exception as ex:
+                bot.logger.warning(
+                    f"delete prior {app_id!r} msgid {old_msgid} in chat "
+                    f"{chatid} failed: {ex}"
+                )
 
-    if sent or refreshed:
+    if sent or retracted:
         _save_msgids(_msgid_map)
-        # State push is cheap and keeps both freshly-sent and
-        # already-present instances in sync.
         _push_state(bot, accid, _last_known_state)
-    return sent, refreshed
+    return sent, retracted
 
 
 # ----------------------------------------------------- shared command path
@@ -640,33 +652,15 @@ def on_new_message(bot, accid, event):
         if not _is_allowed(chatid):
             bot.rpc.send_msg(accid, chatid, MsgData(text="permission denied"))
             return
-        # /apps is idempotent by default: re-sends only apps that aren't
-        # already installed in this chat. /apps reset wipes the tracking
-        # and sends every app fresh -- the escape hatch for "I deleted
-        # the message locally and want a clean copy".
-        force = len(parts) > 1 and parts[1].lower() == "reset"
-        sent, refreshed = _send_apps(bot, accid, chatid, force=force)
-        if force:
-            if sent:
-                reply = f"Apps reset: sent {', '.join(sent)}."
-            else:
-                reply = "No apps available to send."
-        elif sent and refreshed:
-            reply = (
-                f"Sent: {', '.join(sent)}. "
-                f"Already present (state refreshed): {', '.join(refreshed)}."
-            )
-        elif sent:
-            reply = f"Sent: {', '.join(sent)}."
-        elif refreshed:
-            reply = (
-                f"All apps already present in this chat "
-                f"(state refreshed): {', '.join(refreshed)}. "
-                f"Use '/apps reset' to force a fresh send."
-            )
-        else:
-            reply = "No apps available to send."
-        bot.rpc.send_msg(accid, chatid, MsgData(text=reply))
+        sent, retracted = _send_apps(bot, accid, chatid)
+        fragments: list[str] = []
+        if sent:
+            fragments.append(f"Sent: {', '.join(sent)}")
+        if retracted:
+            fragments.append(f"Retracted: {', '.join(retracted)}")
+        if not fragments:
+            fragments.append("No apps available to send")
+        bot.rpc.send_msg(accid, chatid, MsgData(text=". ".join(fragments) + "."))
         return
 
     help_text = os.environ.get("HELP_MESSAGE", DEFAULT_HELP_MESSAGE)

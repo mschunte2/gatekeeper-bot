@@ -6,10 +6,14 @@ key.hex
 # Python venv
 venv/
 
-# webxdc app build output and JS deps (apps/*/ are the sources;
-# the built .xdc artifacts at the repo root ARE tracked).
+# webxdc app build output and JS deps. apps/*/ are live sources;
+# apps-disabled/*/ holds sources of apps currently unpublished. The
+# built .xdc artefacts (under apps/ for live, apps-disabled/ for
+# disabled) ARE tracked.
 apps/*/node_modules/
 apps/*/dist/
+apps-disabled/*/node_modules/
+apps-disabled/*/dist/
 
 # local bluepy build (checked out via pip install -e for the fast path)
 bluepy/
