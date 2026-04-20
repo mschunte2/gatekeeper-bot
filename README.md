@@ -2,6 +2,7 @@
 
 *Based on [missytake/doorbot](https://git.0x90.space/missytake/doorbot) -- thanks to missytake for the Delta Chat bot skeleton.*
 *Webxdc app reuses the layout from [deltachat-bot/webxdcbot](https://github.com/deltachat-bot/webxdcbot).*
+*Substantial portions of the code and documentation were co-authored with [Anthropic Claude](https://www.anthropic.com/claude) under the repo owner's direction -- see [Attribution](#12-attribution) at the end of this README for details.*
 
 A Raspberry Pi-hosted bridge that operates an **eQ-3 Eqiva Smart Lock** from
 chat. A small Python daemon (`delta-door-bot.py`) listens on a
@@ -827,3 +828,39 @@ hard-coded list. To add a new app:
    picked up automatically the next time `/apps` runs (no bot
    restart needed if the file appears between two `/apps` calls;
    for new chats the bot also picks it up at startup).
+
+---
+
+## 12. Attribution
+
+Substantial portions of this repository -- both the Python bot and
+the webxdc apps -- were **co-authored with [Anthropic Claude](https://www.anthropic.com/claude)**
+(the `claude-opus-4-7` model family) working interactively with the
+repo owner. Every design decision was reviewed, approved, and
+directed by a human; Claude generated code, rewrote text, and
+produced commits based on that direction. The audit trail is in
+the git history: commits that Claude helped author carry a
+`Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>`
+trailer.
+
+Per [Anthropic's Commercial Terms](https://www.anthropic.com/legal/commercial-terms),
+ownership of model output is assigned to the customer; Anthropic
+does not claim copyright over the generated code.
+
+### No attached licence (deliberate)
+
+This repository does **not** include a `LICENSE` file. The reason
+is upstream: the project builds on multiple external components
+(the `missytake/doorbot` skeleton, the `deltachat-bot/webxdcbot`
+layout, the `keyblepy` submodule, `bluepy`, `deltachat-core-rust`,
+various npm dependencies) whose licensing the repo owner has not
+individually audited. Asserting a clean licence on the combined
+work would imply a guarantee about those inputs the repo owner is
+not in a position to make.
+
+If you want to reuse code from here in your own project, **please
+open an issue and ask** -- the repo owner is happy to grant
+specific permission for specific reuse, and can check the upstream
+constraints for you at that point. Pull requests are welcome; by
+submitting one you agree that your contribution may be used under
+whatever terms the repo eventually adopts.
