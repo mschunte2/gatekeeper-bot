@@ -243,8 +243,9 @@ systemd-unit/              service file
 
 - `appdirs` (used for `user_config_dir`) is deprecated upstream in
   favour of `platformdirs`. Pre-existing; no urgency.
-- `log_event` hook logs every raw deltachat event at INFO — very
-  chatty in journalctl. Pre-existing.
+- `log_event` hook logs every raw deltachat event at DEBUG. Hidden
+  at the default `LOG_LEVEL=info`; run with `LOG_LEVEL=debug` in
+  `.env` when you need the full event firehose.
 - `bluepy` uses raw HCI sockets which can conflict with bluetoothd.
   `send-command.sh` mitigates this with `bluetoothctl scan off` +
   adapter reset before each operation. Long-term fix: migrate
@@ -252,6 +253,35 @@ systemd-unit/              service file
 - The onboard BCM43430A1 adapter on the Pi Zero 2 W returns
   `setsockopt(BT_SECURITY): Invalid argument` when bluepy tries to
   set the security level. Use the USB adapter instead.
+
+## Open investigation: lock returning `state=unknown`
+
+Observed 2026-04-20: the hoftor bot logged four consecutive
+`send-command.sh status -> state=unknown` results across a few
+minutes from three different chats. `rc=0` each time, but
+`parse_state_from_output()` could not classify the stdout as
+`locked` or `unlocked`. Root cause unclear — transient BLE frame
+corruption, unusual keyblepy output, or a parser gap.
+
+To gather data for future diagnosis, `run_lock_command` and the
+`_on_start` status probe now log at WARNING with the raw stdout +
+stderr whenever the parser returns None. Grep the journal:
+
+```
+journalctl -u deltabot-gatekeeper-hoftor -u deltabot-gatekeeper-km \
+    --since "1 week ago" -o cat --output-fields=MESSAGE \
+    | grep -B1 -A20 "state parse returned"
+```
+
+**When revisiting this project:** check the accumulated WARNING
+lines. If several samples share a pattern (a specific unmatched
+token, a consistent BLE error string, a timing correlation),
+extend `parse_state_from_output` in `delta-door-bot.py` to match
+that pattern, or patch keyblepy upstream. Until then, "unknown"
+remains a graceful-degrade state.
+
+Logs are currently kept at the distro default retention (roughly
+1 month at 2 GB/month on the Pi, ample for this investigation).
 
 ## Fixed bugs (history, for context)
 
