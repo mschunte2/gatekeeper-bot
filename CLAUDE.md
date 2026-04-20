@@ -260,8 +260,27 @@ Observed 2026-04-20: the hoftor bot logged four consecutive
 `send-command.sh status -> state=unknown` results across a few
 minutes from three different chats. `rc=0` each time, but
 `parse_state_from_output()` could not classify the stdout as
-`locked` or `unlocked`. Root cause unclear — transient BLE frame
-corruption, unusual keyblepy output, or a parser gap.
+`locked` or `unlocked`. Likely cause: the Eqiva lock reports
+additional states beyond the two we currently map, and the parser
+falls through to `None` for anything else.
+
+Two specific variants to watch for in the raw stdout we now log
+(from the repo owner's field experience with this lock):
+
+1. **"unknown after manual operation"** — reported by the lock
+   shortly after a physical key turn (door bolt was thrown by hand,
+   not by BLE). This is the state captured on 2026-04-20.
+2. **"locked automatically"** — reported by the lock after its
+   own auto-lock timer engages (configurable on the lock itself).
+   Expected to show up in the mornings if the auto-lock fires
+   overnight.
+
+Both are semantically "the door is now locked / unlocked, and here's
+extra context about how it got that way." Once the logged samples
+confirm the exact tokens the lock emits for each, extend
+`parse_state_from_output` to map them to `locked` / `unlocked` and
+(optionally) surface the "how it got there" context in the audit
+line or app UI.
 
 To gather data for future diagnosis, `run_lock_command` and the
 `_on_start` status probe now log at WARNING with the raw stdout +
