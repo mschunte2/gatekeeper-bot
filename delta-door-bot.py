@@ -80,7 +80,7 @@ _AUDIT_VERB = {
     "status": ("ℹ️", "status checked"),
 }
 
-MAX_AGE_SECONDS = 30  # text-message replay-protection window
+MAX_AGE_SECONDS = 60  # text-message replay-protection window
 MAX_APP_AGE_SECONDS = 45  # webxdc button-press replay-protection window
 
 # Strip control chars / newlines from values that arrive over the wire
