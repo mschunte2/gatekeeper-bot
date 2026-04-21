@@ -15,7 +15,7 @@ const DOOR_ICONS = {
 const STATE_LABELS = {
   locked: "Locked",
   unlocked: "Unlocked",
-  unknown: "Unknown",
+  unknown: "lock/unlock with key",
   error: "Error",
 };
 
