@@ -151,13 +151,13 @@ removed) gets its old msgid deleted for all chat members and
 dropped from tracking on the next `/apps`. This means "unpublish"
 through the filesystem cleanly withdraws the app from every chat.
 
-`apps-disabled/` holds apps we currently don't serve. Unlike the
-earlier convention (only the built .xdc moved), the source tree
-now moves alongside the artifact: e.g. `apps-disabled/quick-lock/`
-+ `apps-disabled/quick-lock.xdc`. The source's `vite.config.mjs`
-`outDir` is `"../../apps-disabled/"` so rebuilds land in the same
-directory. To re-enable an app, move both the source dir and the
-.xdc back under `apps/` and adjust `outDir` to `"../"`.
+`apps-disabled/` holds apps we currently don't serve. The source
+tree moves alongside the artifact: e.g. `apps-disabled/quick-lock/`
++ `apps-disabled/quick-lock.xdc`. To re-enable an app, move both
+the source dir and the .xdc back under `apps/`. `build-xdc.sh`
+(see below) writes the .xdc to `<srcdir>/../<name>.xdc`, so the
+output tracks the source location automatically with no config
+changes.
 
 ## Protocol: bot ↔ webxdc apps
 
@@ -206,6 +206,7 @@ send-command.sh            BLE wrapper (flock, adapter resolution, retry)
 pair-lock.sh               interactive BLE bond guide
 register-user.sh           one-time lock registration
 start-gatekeeper-bot.sh    systemd entrypoint (sources .env, activates venv)
+build-xdc.sh               packages an app source dir into a .xdc (plain zip)
 lib/common.sh              sourced helper: .env load, venv, adapter,
                            flock, cleanup (shared by the 3 BLE scripts)
 .env                       secrets + config (gitignored)
@@ -215,7 +216,7 @@ apps/
   gatekeeper/              full lock-control app source
 apps-disabled/             apps we build but do NOT serve via /apps
   quick-lock.xdc           built artifact (tracked)
-  quick-lock/              one-tap lock app source (outDir points here)
+  quick-lock/              one-tap lock app source
                            quick-unlock was retired entirely -- gitignored
                            to prevent accidental re-entry
 keyblepy/                  BLE protocol implementation (git submodule)
@@ -348,15 +349,24 @@ systemd unit and no `.env`.
 
 ## Build system
 
-Apps are built with vite (**Node.js 22+** required -- newer vite
-deps pull in `rolldown`, which imports `node:util.styleText`,
-missing on Node 18). Each app has its own `vite.config.mjs` under
-its source dir. For live apps (`apps/<id>/`) outDir is `"../"` so
-the artifact lands at `apps/<id>.xdc`; for disabled apps
-(`apps-disabled/<id>/`) outDir is `"../../apps-disabled/"` for the
-same effect one level over. The bot discovers apps by globbing
-`apps/*.xdc` — no hard-coded list. After rebuilding, commit the
-updated `.xdc` so deploys don't need Node.
+Apps are packaged by `./build-xdc.sh <source-dir>`, which zips
+`index.html`, `main.js`, `main.css`, and everything under `public/`
+into `<source-dir>/../<name>.xdc`. Plain zip, no bundler, no Node
+required. Earlier iterations used vite; the apps are vanilla JS
+with zero imports/exports, so bundling earned nothing and was
+removed (along with each app's `package.json`, `vite.config.mjs`,
+and `node_modules/`). A `.xdc` is just a zip with a specific
+layout, which Delta Chat reads directly.
+
+Because the output path derives from the source path
+(`<srcdir>/../<name>.xdc`), a live app at `apps/gatekeeper/` lands
+at `apps/gatekeeper.xdc`, and a disabled app at
+`apps-disabled/quick-lock/` lands at `apps-disabled/quick-lock.xdc`
+-- no per-app config changes when moving between the two.
+
+The bot discovers apps by globbing `apps/*.xdc` -- no hard-coded
+list. After rebuilding, commit the updated `.xdc` so deploys just
+need `git pull`.
 
 ## Deployment
 
