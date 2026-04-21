@@ -80,6 +80,16 @@ _AUDIT_VERB = {
     "status": ("ℹ️", "status checked"),
 }
 
+# Audit line shown for observed state transitions that are NOT the
+# direct result of an app command. Currently only 'unknown', emitted
+# when a status probe catches a manual key/knob operation (the lock
+# cannot determine bolt direction after a physical turn, so it reports
+# UNKNOWN). Keyed by state so additional transitions can be added here
+# without touching the audit-emission code.
+_AUDIT_STATE = {
+    "unknown": ("❓", "Manual lock/unlock"),
+}
+
 MAX_AGE_SECONDS = 60  # text-message replay-protection window
 MAX_APP_AGE_SECONDS = 45  # webxdc button-press replay-protection window
 
@@ -472,10 +482,12 @@ def run_lock_command(
         and prev_state not in (None, "unknown", "error")
     )
     if actor_name is not None and (command != "status" or manual_event):
-        emoji, _verb = _AUDIT_VERB.get(command, ("🔧", command))
-        if new_state == "unknown":
-            audit = f"❓ {DOOR_NAME} - Manual lock/unlock"
+        state_override = _AUDIT_STATE.get(new_state)
+        if state_override is not None:
+            state_emoji, state_verb = state_override
+            audit = f"{state_emoji} {DOOR_NAME} - {state_verb}"
         elif proc.returncode == 0:
+            emoji, _verb = _AUDIT_VERB.get(command, ("🔧", command))
             audit = f"{emoji} {DOOR_NAME} {actor_name}"
         else:
             audit = f"❌ {DOOR_NAME} {actor_name} ({command} failed)"
