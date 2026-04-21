@@ -581,12 +581,6 @@ lock. There is no open direction here -- a tap on a non-closed
 slider only retries the lock command. The chat-message preview icon
 is the red "Closed" image (the target state).
 
-A previously-shipped **Quick-Unlock** app (a one-tap-unlock mirror
-of Quick-Lock) was retired entirely and is gitignored to prevent
-reintroduction -- one-click unlock from a phone home screen is too
-costly a failure mode. See history before `92b72ec` for its source
-if you need to resurrect it for a different deployment.
-
 #### State updates
 
 The status icons / labels in both apps update from silent webxdc
