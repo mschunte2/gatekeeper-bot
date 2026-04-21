@@ -191,7 +191,15 @@ _BATTERY_RE = re.compile(
 
 
 def parse_state_from_output(text: str) -> str | None:
-    """Return 'locked' or 'unlocked' if the output reports a state, else None."""
+    """Return 'locked'/'unlocked'/'unknown' if the output reports a state,
+    else None.
+
+    'unknown' covers keyblepy's UNKNOWN (lock cannot determine bolt
+    direction, e.g. after a manual key or knob turn) and MOVING (motor
+    running, transient). These are real lock-reported states, not parse
+    failures, and should not trigger the 'parse returned None' warning.
+    None is reserved for output we could not match at all.
+    """
     for line in text.splitlines():
         m = _RESULT_RE.match(line)
         if m:
@@ -203,6 +211,8 @@ def parse_state_from_output(text: str) -> str | None:
                 return "locked"
             if v in {"UNLOCKED", "OPENED"}:
                 return "unlocked"
+            if v in {"UNKNOWN", "MOVING"}:
+                return "unknown"
     return None
 
 
@@ -411,6 +421,12 @@ def run_lock_command(
         stderr=subprocess.PIPE,
     )
 
+    bot.logger.debug(
+        f"send-command.sh {command} rc={proc.returncode}\n"
+        f"---stdout---\n{proc.stdout.strip()}\n"
+        f"---stderr---\n{proc.stderr.strip()}"
+    )
+
     # Text path: echo raw subprocess output (existing behaviour).
     # App path: stay silent here -- the audit line below speaks for the
     # app, and the raw 'device opened' line would just duplicate it.
@@ -422,20 +438,12 @@ def run_lock_command(
             if line.strip():
                 bot.rpc.send_msg(accid, chatid, MsgData(text=line))
 
-    # Audit line for app-triggered commands. Skip 'status' because it is
-    # read-only and noisy (the app auto-requests it on open).
-    if actor_name is not None and command != "status":
-        emoji, _verb = _AUDIT_VERB.get(command, ("🔧", command))
-        if proc.returncode == 0:
-            audit = f"{emoji} {DOOR_NAME} {actor_name}"
-        else:
-            audit = f"❌ {DOOR_NAME} {actor_name} ({command} failed)"
-        bot.rpc.send_msg(accid, chatid, MsgData(text=audit))
-
     if proc.returncode != 0:
         new_state = "error"
         bot.logger.warning(
-            f"send-command.sh {command} rc={proc.returncode}"
+            f"send-command.sh {command} rc={proc.returncode}; "
+            f"raw stdout:\n{proc.stdout.strip()}\n"
+            f"---stderr---\n{proc.stderr.strip()}"
         )
     else:
         parsed = parse_state_from_output(proc.stdout)
@@ -447,7 +455,31 @@ def run_lock_command(
             )
             new_state = "unknown"
         else:
+            if parsed == "unknown":
+                bot.logger.debug(
+                    f"send-command.sh {command} -> lock reported "
+                    f"UNKNOWN/MOVING; raw stdout:\n{proc.stdout.strip()}"
+                )
             new_state = parsed
+
+    # Audit line for app-triggered commands. Skip 'status' because it is
+    # read-only and noisy (the app auto-requests it on open) -- except
+    # when status flips to 'unknown', which means the lock was operated
+    # manually (key/knob) since our last poll and is worth flagging.
+    prev_state = _last_known_state
+    manual_event = (
+        new_state == "unknown"
+        and prev_state not in (None, "unknown", "error")
+    )
+    if actor_name is not None and (command != "status" or manual_event):
+        emoji, _verb = _AUDIT_VERB.get(command, ("🔧", command))
+        if new_state == "unknown":
+            audit = f"❓ {DOOR_NAME} - Manual lock/unlock"
+        elif proc.returncode == 0:
+            audit = f"{emoji} {DOOR_NAME} {actor_name}"
+        else:
+            audit = f"❌ {DOOR_NAME} {actor_name} ({command} failed)"
+        bot.rpc.send_msg(accid, chatid, MsgData(text=audit))
 
     # Only status output carries battery_low; preserve the cached value
     # (from the last status probe) for lock/unlock/open.
@@ -701,6 +733,11 @@ def _on_start(bot, _args):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
+        bot.logger.debug(
+            f"startup status probe rc={proc.returncode}\n"
+            f"---stdout---\n{proc.stdout.strip()}\n"
+            f"---stderr---\n{proc.stderr.strip()}"
+        )
         if proc.returncode == 0:
             parsed = parse_state_from_output(proc.stdout)
             if parsed is None:
@@ -711,12 +748,23 @@ def _on_start(bot, _args):
                 )
                 _last_known_state = "unknown"
             else:
+                if parsed == "unknown":
+                    bot.logger.debug(
+                        f"startup status probe -> lock reported "
+                        f"UNKNOWN/MOVING; raw stdout:\n"
+                        f"{proc.stdout.strip()}"
+                    )
                 _last_known_state = parsed
             battery_low = parse_battery_low_from_output(proc.stdout)
             if battery_low is not None:
                 _last_battery_low = battery_low
         else:
             _last_known_state = "error"
+            bot.logger.warning(
+                f"startup status probe rc={proc.returncode}; "
+                f"raw stdout:\n{proc.stdout.strip()}\n"
+                f"---stderr---\n{proc.stderr.strip()}"
+            )
         _last_state_ts = int(time.time())
         bot.logger.info(
             f"startup status probe -> {_last_known_state}; "
