@@ -1,5 +1,5 @@
 [Unit]
-Description=BLE link-quality probe (send-command.sh status x both locks)
+Description=BLE link-quality probe (send-command.sh status x 2 locks x 2 adapters)
 # Don't fight the bots at startup; run after bluetoothd is up.
 After=bluetooth.service deltabot-gatekeeper-hoftor.service deltabot-gatekeeper-km.service
 Wants=bluetooth.service
@@ -15,12 +15,23 @@ Group=pi
 # tool can group "before" vs "after" without you doing anything else.
 Environment=ANTENNA=internal
 
-# Two probes per cycle: USB adapter -> each lock. Each ExecStart is
-# an independent invocation; common.sh's flock serializes them.
-ExecStart=/home/pi/ble-probe/ble-probe.sh /home/pi/gatekeeper-hoftor usb 8A:88:4B:C2:9C:B9 hoftor
-ExecStart=/home/pi/ble-probe/ble-probe.sh /home/pi/gatekeeper-km     usb 8A:88:4B:C2:9C:B9 km
+# Four probes per cycle: {USB, built-in} x {hoftor, km}. Each
+# ExecStart is an independent invocation; common.sh's flock
+# (per-adapter) serializes them. The empty ADAPTER_MAC for the
+# built-in probes forces common.sh's UART fallback (= built-in).
+#
+# Note: the built-in adapter is currently NOT paired with either
+# lock, so its probes traverse the slow SEC_LEVEL=low fallback
+# path (still functional, ~10-15s instead of ~3s, with a benign
+# "Bond may be lost" warning in stderr). Pair both locks to the
+# built-in via pair-lock.sh if you want a fair fast-path
+# comparison -- see README §8.
+ExecStart=/home/pi/ble-probe/ble-probe.sh /home/pi/gatekeeper-hoftor usb     8A:88:4B:C2:9C:B9 hoftor
+ExecStart=/home/pi/ble-probe/ble-probe.sh /home/pi/gatekeeper-km     usb     8A:88:4B:C2:9C:B9 km
+ExecStart=/home/pi/ble-probe/ble-probe.sh /home/pi/gatekeeper-hoftor builtin ""                hoftor
+ExecStart=/home/pi/ble-probe/ble-probe.sh /home/pi/gatekeeper-km     builtin ""                km
 
 Nice=10
-# Each probe = ~3-30s (connect + optional retry); 2 probes back-to-back.
+# Each probe = ~3-30s (connect + optional retry); 4 probes back-to-back.
 # Hard ceiling well above worst case so a runaway is killed.
-TimeoutStartSec=120
+TimeoutStartSec=240

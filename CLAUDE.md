@@ -266,9 +266,13 @@ The probe acquires the same flock as the bots, so it never
 collides with `/auf`. Battery cost is ~48 cycles per lock per day
 (roughly 5x normal user activity) -- meaningful but not crippling.
 
-The built-in BCM43430A1 adapter is paired with neither lock and
-is known-broken on this Pi (BT_SECURITY: Invalid argument); the
-probe targets the USB dongle only.
+The built-in BCM43430A1 adapter is paired with neither lock but
+still reaches both via the low-sec fallback path (validated
+2026-04-22 with the probe -- ~9-14 s vs the USB's ~9 s; the
+historical "BT_SECURITY: Invalid argument" warning turned out to
+be link-margin, not adapter capability). The probe runs four
+samples per cycle: {usb, builtin} x {hoftor, km}. Pair the
+built-in via pair-lock.sh if you want the fast path on it too.
 
 ## Known issues / accepted trade-offs
 
@@ -281,9 +285,16 @@ probe targets the USB dongle only.
   `send-command.sh` mitigates this with `bluetoothctl scan off` +
   adapter reset before each operation. Long-term fix: migrate
   keyblepy to `bleak` (D-Bus based).
-- The onboard BCM43430A1 adapter on the Pi Zero 2 W returns
-  `setsockopt(BT_SECURITY): Invalid argument` when bluepy tries to
-  set the security level. Use the USB adapter instead.
+- The onboard BCM43430A1 adapter on the Pi Zero 2 W historically
+  returned `setsockopt(BT_SECURITY): Invalid argument` during early
+  testing, leading us to designate the USB dongle as required.
+  Re-tested 2026-04-22 with the link-quality probe: the built-in
+  adapter actually reaches both locks (~9-14 s via the low-sec
+  fallback, since it is not paired). The original error was almost
+  certainly an out-of-range / link-margin artifact, not an adapter
+  limitation. Production still uses the USB adapter for its
+  stronger antenna and faster (paired) path; the built-in is a
+  viable fallback.
 
 ## Resolved: lock returning `state=unknown` = manual operation
 

@@ -63,7 +63,10 @@ cd "$BOT_DIR" || {
 
 # Override ADAPTER_MAC for this single invocation. Empty value is
 # valid (forces common.sh's UART fallback = built-in adapter).
-export ADAPTER_MAC="$ADAPTER_MAC_ARG"
+# Use ADAPTER_MAC_FORCE because plain ADAPTER_MAC gets clobbered
+# when send-command.sh's load_env sources .env (assignments in a
+# sourced file beat exported env vars).
+export ADAPTER_MAC_FORCE="$ADAPTER_MAC_ARG"
 # LOG_LEVEL doesn't affect send-command.sh itself (it's a bot env
 # var), but we capture full stderr unconditionally below.
 

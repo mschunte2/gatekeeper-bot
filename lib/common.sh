@@ -24,10 +24,25 @@ load_env() {
         echo "Please create a .env configuration file first (see .env.example)." >&2
         exit 1
     fi
+    # Sourcing .env will overwrite any ADAPTER_MAC the caller passed
+    # in (because plain assignments in .env beat exported env vars).
+    # That broke the link-quality probe and ad-hoc pair-lock runs
+    # that wanted to target the built-in adapter. Honour an explicit
+    # ADAPTER_MAC_FORCE override (set even to empty == "use UART"),
+    # restored after the source. Production callers don't set this,
+    # so .env continues to win for them.
+    local _force_set=0 _force_val=""
+    if [ "${ADAPTER_MAC_FORCE+x}" = "x" ]; then
+        _force_set=1
+        _force_val="$ADAPTER_MAC_FORCE"
+    fi
     set -a
     # shellcheck disable=SC1091
     source ./.env
     set +a
+    if [ "$_force_set" = "1" ]; then
+        ADAPTER_MAC="$_force_val"
+    fi
 }
 
 activate_venv() {
