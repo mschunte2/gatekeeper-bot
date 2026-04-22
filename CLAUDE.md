@@ -255,53 +255,43 @@ systemd-unit/              service file
   `setsockopt(BT_SECURITY): Invalid argument` when bluepy tries to
   set the security level. Use the USB adapter instead.
 
-## Open investigation: lock returning `state=unknown`
+## Resolved: lock returning `state=unknown` = manual operation
 
-Observed 2026-04-20: the hoftor bot logged four consecutive
-`send-command.sh status -> state=unknown` results across a few
-minutes from three different chats. `rc=0` each time, but
-`parse_state_from_output()` could not classify the stdout as
-`locked` or `unlocked`. Likely cause: the Eqiva lock reports
-additional states beyond the two we currently map, and the parser
-falls through to `None` for anything else.
+Investigation closed 2026-04-21. `state=unknown` is not a parser
+gap -- it is the Eqiva lock's genuine response after the bolt has
+been moved physically (key or knob). The motor's position sensors
+can't infer direction from a manual turn, so the lock reports
+UNKNOWN until the next BLE operation settles it.
 
-Two specific variants to watch for in the raw stdout we now log
-(from the repo owner's field experience with this lock):
+keyblepy correctly decodes the low 3 bits of `plaintext[2]` as
+`UNKNOWN(0)` per the reference mapping
+(`UNKNOWN/MOVING/UNLOCKED/LOCKED/OPENED`). The 2026-04-20 burst of
+four consecutive `state=unknown` results was field-confirmed as
+manual operations on the door, not a protocol or parsing issue.
 
-1. **"unknown after manual operation"** — reported by the lock
-   shortly after a physical key turn (door bolt was thrown by hand,
-   not by BLE). This is the state captured on 2026-04-20.
-2. **"locked automatically"** — reported by the lock after its
-   own auto-lock timer engages (configurable on the lock itself).
-   Expected to show up in the mornings if the auto-lock fires
-   overnight.
+Current behaviour, all in `delta-door-bot.py`:
 
-Both are semantically "the door is now locked / unlocked, and here's
-extra context about how it got that way." Once the logged samples
-confirm the exact tokens the lock emits for each, extend
-`parse_state_from_output` to map them to `locked` / `unlocked` and
-(optionally) surface the "how it got there" context in the audit
-line or app UI.
+- `parse_state_from_output` returns `"unknown"` (not `None`) for
+  UNKNOWN / MOVING. The WARN channel is reserved for genuinely
+  unclassified output.
+- `_AUDIT_STATE = {"unknown": ("❓", "Manual lock/unlock")}` drives
+  the audit line when a `/status` probe detects a transition
+  `{locked,unlocked} → unknown`. A `manual_event` guard suppresses
+  spam on repeat polls that re-observe UNKNOWN.
+- App `STATE_LABELS.unknown = "lock/unlock with key"` mirrors the
+  same semantics in the webxdc UI.
+- Every `send-command.sh` invocation still emits a DEBUG line with
+  `rc + stdout + stderr`; `rc != 0` escalates the same payload to
+  WARN. Enable with `LOG_LEVEL=debug` in `.env` to collect raw
+  samples if a new unclassified variant ever surfaces.
 
-To gather data for future diagnosis, `run_lock_command` and the
-`_on_start` status probe now log at WARNING with the raw stdout +
-stderr whenever the parser returns None. Grep the journal:
-
-```
-journalctl -u deltabot-gatekeeper-hoftor -u deltabot-gatekeeper-km \
-    --since "1 week ago" -o cat --output-fields=MESSAGE \
-    | grep -B1 -A20 "state parse returned"
-```
-
-**When revisiting this project:** check the accumulated WARNING
-lines. If several samples share a pattern (a specific unmatched
-token, a consistent BLE error string, a timing correlation),
-extend `parse_state_from_output` in `delta-door-bot.py` to match
-that pattern, or patch keyblepy upstream. Until then, "unknown"
-remains a graceful-degrade state.
-
-Logs are currently kept at the distro default retention (roughly
-1 month at 2 GB/month on the Pi, ample for this investigation).
+Still speculative (no samples yet): the lock's "locked
+automatically" variant after its own auto-lock timer fires. If it
+ever produces output the parser can't classify, the WARN log will
+capture the raw bytes and `parse_state_from_output` can be
+extended. Until then, "unknown" is both the graceful-degrade state
+AND the semantic label for manual operations -- the two meanings
+coexist intentionally.
 
 ## Fixed bugs (history, for context)
 

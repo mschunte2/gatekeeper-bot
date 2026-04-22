@@ -34,3 +34,4 @@ log.txt
 # retired apps -- kept in history but not reintroduced into new builds
 quick-unlock/
 quick-unlock.xdc
+.claude/
