@@ -6,9 +6,8 @@ Text path:
     /unlock | /auf    -> send-command.sh unlock
     /status           -> send-command.sh status
     /id               -> reply with this chat's id (always allowed)
-    /apps             -> idempotently deliver webxdc apps (skip ones
-                         already in this chat; refresh their state)
-    /apps reset       -> wipe tracking and send every app fresh
+    /apps             -> (re)deliver webxdc apps; replaces prior copies
+                         so late-joining chat members get a fresh install
     anything else     -> help text
 
 Webxdc apps (apps/<id>.xdc), all sharing one protocol:
@@ -140,6 +139,12 @@ _CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
 def _sanitize(value, fallback: str = "?", max_len: int = 64) -> str:
+    if value is not None and not isinstance(value, str):
+        # Pathological peer: webxdc spec says these fields are strings.
+        # Log once per occurrence so we can notice if a client breaks
+        # the contract; fall through to the str() coercion anyway so
+        # this can't crash the request path.
+        log.debug("sanitize received non-string %r (%s)", value, type(value).__name__)
     if not isinstance(value, str):
         value = str(value) if value is not None else ""
     cleaned = _CTRL_RE.sub(" ", value).strip()
@@ -149,9 +154,32 @@ def _sanitize(value, fallback: str = "?", max_len: int = 64) -> str:
 
 # ------------------------------------------------------- env-derived config
 
-ALLOWED_CHATS: set[int] = {
-    int(x) for x in os.environ.get("ALLOWED_CHATS", "").split(",") if x.strip()
-}
+
+def _parse_allowed_chats(raw: str) -> set[int]:
+    out: set[int] = set()
+    bad: list[str] = []
+    for x in raw.split(","):
+        s = x.strip()
+        if not s:
+            continue
+        try:
+            out.add(int(s))
+        except ValueError:
+            bad.append(s)
+    if bad:
+        # Caller can't use the bot logger yet (module import time), but
+        # a bad ALLOWED_CHATS value silently dropping entries would look
+        # like a mystery permission denial at runtime. Print + flush so
+        # it lands in the journal before the bot reaches logger setup.
+        print(
+            f"[gatekeeper-bot] ALLOWED_CHATS: ignoring non-integer "
+            f"entries {bad}",
+            flush=True,
+        )
+    return out
+
+
+ALLOWED_CHATS: set[int] = _parse_allowed_chats(os.environ.get("ALLOWED_CHATS", ""))
 DOOR_NAME = (os.environ.get("DOOR_NAME") or "").strip() or "Door"
 
 # ----------------------------------------------------- persistent state map
@@ -161,55 +189,27 @@ APP_MSGIDS_PATH = STATE_DIR / "app_msgids.json"
 
 
 def _load_msgids() -> dict[int, dict[str, int]]:
-    """Load chat_id -> {app_id -> msgid} from disk.
-
-    The state layout evolved from a flat list-per-chat (just msgids,
-    no app identity) to a dict-per-chat (app_id -> msgid) so /apps
-    can be idempotent. Legacy list entries -- which don't record
-    which msgid was which app -- are dropped on load with an info
-    log; the next /apps in that chat re-seeds cleanly. Legacy
-    single-int entries (older still) are treated the same way.
-    """
+    """Load chat_id -> {app_id -> msgid} from disk."""
     try:
         raw = json.loads(APP_MSGIDS_PATH.read_text())
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
     out: dict[int, dict[str, int]] = {}
-    legacy_dropped: list[int] = []
     for k, v in raw.items():
         try:
             chat = int(k)
         except (TypeError, ValueError):
             continue
-        if isinstance(v, dict):
-            apps: dict[str, int] = {}
-            for app_id, msgid in v.items():
-                try:
-                    apps[str(app_id)] = int(msgid)
-                except (TypeError, ValueError):
-                    continue
-            if apps:
-                out[chat] = apps
-        else:
-            # Legacy shape (list[int] or single int): we can't recover
-            # the per-app identity, so drop it. /apps will re-seed.
-            legacy_dropped.append(chat)
-    if legacy_dropped:
-        # Use print here rather than bot.logger -- called at import time,
-        # before the BotCli logger is wired up.
-        print(
-            f"[gatekeeper-bot] dropping legacy app_msgids entries for chats "
-            f"{legacy_dropped}; run /apps in each chat to re-seed",
-            flush=True,
-        )
-        # Rewrite the file so the next startup doesn't re-log the same
-        # drop; without this the legacy entries linger on disk forever
-        # (they're only read, never replaced, until a /apps call).
-        try:
-            _save_msgids(out)
-        except Exception as ex:
-            print(f"[gatekeeper-bot] failed to rewrite app_msgids.json: {ex}",
-                  flush=True)
+        if not isinstance(v, dict):
+            continue
+        apps: dict[str, int] = {}
+        for app_id, msgid in v.items():
+            try:
+                apps[str(app_id)] = int(msgid)
+            except (TypeError, ValueError):
+                continue
+        if apps:
+            out[chat] = apps
     return out
 
 
@@ -628,7 +628,7 @@ def on_webxdc_update(bot, accid, event):
     # (gatekeeper.xdc -> "gatekeeper"); that matches the app_id used by
     # _send_apps (`_xdc_paths()` returns `p.stem`). If we can't derive
     # it (filename missing or doesn't end in .xdc), we log and skip --
-    # the user's next /apps reset will reseed properly.
+    # the user's next /apps will reseed properly.
     chat_apps = _msgid_map.setdefault(chatid, {})
     if msgid not in chat_apps.values():
         learned_id: str | None = None
@@ -660,7 +660,7 @@ def on_webxdc_update(bot, accid, event):
         else:
             bot.logger.info(
                 f"could not derive app_id for msgid={msgid} in chat {chatid} "
-                f"(no .xdc file_name); not learning -- run /apps reset to reseed"
+                f"(no .xdc file_name); not learning -- run /apps to reseed"
             )
 
     if cmd not in VALID_COMMANDS:
@@ -668,24 +668,25 @@ def on_webxdc_update(bot, accid, event):
         return
 
     # Replay protection: drop stale button presses that arrive after
-    # the bot reconnects from an offline period. Apps built before
-    # this feature don't send `ts` -- accept those with a log line so
-    # users can re-install via /apps reset on their own schedule.
+    # the bot reconnects from an offline period. A negative age means
+    # the sender's clock is ahead of ours -- treat that as untrusted
+    # (future-dated) and drop too. Apps built before `ts` was added
+    # are no longer supported; users must /apps to pick up a current
+    # build.
     ts = req.get("ts")
-    if isinstance(ts, (int, float)):
-        age = int(time.time()) - int(ts)
-        if age > MAX_APP_AGE_SECONDS:
-            bot.logger.info(
-                f"app cmd {cmd!r} from chat {chatid} ({name} via {app_id}) "
-                f"age={age}s > {MAX_APP_AGE_SECONDS}s -> ignored"
-            )
-            return
-    else:
+    if not isinstance(ts, (int, float)):
         bot.logger.info(
             f"app cmd {cmd!r} from chat {chatid} ({name} via {app_id}) "
-            f"has no ts field -- accepting (app predates replay protection; "
-            f"suggest /apps reset)"
+            f"has no ts field -> ignored (run /apps to refresh the app)"
         )
+        return
+    age = int(time.time()) - int(ts)
+    if age > MAX_APP_AGE_SECONDS or age < 0:
+        bot.logger.info(
+            f"app cmd {cmd!r} from chat {chatid} ({name} via {app_id}) "
+            f"age={age}s (limit {MAX_APP_AGE_SECONDS}s) -> ignored"
+        )
+        return
 
     # Tell apps "command received, working on it" before the BLE
     # round-trip blocks the event loop for several seconds. Apps that
@@ -730,10 +731,10 @@ def on_new_message(bot, accid, event):
             bot.rpc.send_msg(accid, chatid, MsgData(text="permission denied"))
             return
         age = int(time.time()) - msg.timestamp
-        if age > MAX_AGE_SECONDS:
+        if age > MAX_AGE_SECONDS or age < 0:
             bot.logger.info(
                 f"text command {text!r} in msg {msg.id} chat {chatid} "
-                f"age={age}s > {MAX_AGE_SECONDS}s -> ignored"
+                f"age={age}s (limit {MAX_AGE_SECONDS}s) -> ignored"
             )
             bot.rpc.send_reaction(accid, msg.id, ["❌"])
             return
@@ -744,8 +745,7 @@ def on_new_message(bot, accid, event):
         )
         return
 
-    parts = text.split()
-    if parts and parts[0] == "/apps":
+    if text == "/apps":
         if not _is_allowed(chatid):
             bot.rpc.send_msg(accid, chatid, MsgData(text="permission denied"))
             return
@@ -776,6 +776,12 @@ def _on_start(bot, _args):
         f"door_name={DOOR_NAME!r} known_chats={len(_msgid_map)} "
         f"app_instances={total_instances}"
     )
+    if not ALLOWED_CHATS:
+        bot.logger.warning(
+            "ALLOWED_CHATS is empty -- every lock command will be denied. "
+            "Use /id in the target group and add the returned id to "
+            "ALLOWED_CHATS in .env."
+        )
 
     # Seed the icon by querying the lock once so app instances opened
     # before any user action already show the right state.

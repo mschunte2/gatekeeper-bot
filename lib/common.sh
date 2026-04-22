@@ -44,12 +44,16 @@ activate_venv() {
 # Exits 4 if no usable adapter is found.
 
 resolve_adapter() {
+    if ! command -v hciconfig >/dev/null 2>&1; then
+        echo "hciconfig not found (package bluez-tools); cannot resolve BLE adapter." >&2
+        exit 4
+    fi
     if [ -n "$ADAPTER_MAC" ]; then
         HCI_IFACE=$(hciconfig -a 2>/dev/null \
             | grep -B1 "$ADAPTER_MAC" \
             | grep -oP 'hci\K\d+' \
             | head -1)
-        if [ -z "$HCI_IFACE" ]; then
+        if ! [[ "$HCI_IFACE" =~ ^[0-9]+$ ]]; then
             echo "BLE adapter $ADAPTER_MAC not found. Is the dongle plugged in?" >&2
             exit 4
         fi
@@ -59,7 +63,7 @@ resolve_adapter() {
             | grep -B1 "Bus: UART" \
             | grep -oP 'hci\K\d+' \
             | head -1)
-        if [ -z "$HCI_IFACE" ]; then
+        if ! [[ "$HCI_IFACE" =~ ^[0-9]+$ ]]; then
             echo "No built-in BLE adapter found." >&2
             exit 4
         fi

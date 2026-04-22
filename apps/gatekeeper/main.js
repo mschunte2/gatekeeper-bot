@@ -75,13 +75,11 @@ function setDoorState(state) {
 }
 
 function setPending(command) {
-  doorBtn.classList.add("pending");
-  statusEl.classList.add("pending");
-  const verb = PENDING_VERB[command] || "working";
-  statusText.textContent = "Door: " + verb + "…";
   clearPending();
+  const verb = PENDING_VERB[command] || "working";
   doorBtn.classList.add("pending");
   statusEl.classList.add("pending");
+  statusText.textContent = "Door: " + verb + "…";
   for (const stage of PENDING_STAGES) {
     _pendingTimers.push(setTimeout(() => {
       statusText.textContent = "Door: " + verb + " — " + stage.text;
