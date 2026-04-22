@@ -1,0 +1,14 @@
+[Unit]
+Description=Run BLE link-quality probe (every 30 minutes)
+
+[Timer]
+# First fire 2 min after boot (let bluetoothd + bots settle), then
+# every 30 min. Persistent=true catches up after reboot/downtime so
+# you don't get a gap on the next boot.
+OnBootSec=2min
+OnUnitActiveSec=30min
+Persistent=true
+Unit=ble-probe.service
+
+[Install]
+WantedBy=timers.target

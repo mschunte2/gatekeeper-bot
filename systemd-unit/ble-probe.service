@@ -1,0 +1,26 @@
+[Unit]
+Description=BLE link-quality probe (send-command.sh status x both locks)
+# Don't fight the bots at startup; run after bluetoothd is up.
+After=bluetooth.service deltabot-gatekeeper-hoftor.service deltabot-gatekeeper-km.service
+Wants=bluetooth.service
+
+[Service]
+Type=oneshot
+User=pi
+Group=pi
+
+# *** Antenna label *** — bump this string when you swap antennas, then:
+#   sudo systemctl daemon-reload
+# All subsequent samples self-tag with the new label, so the stats
+# tool can group "before" vs "after" without you doing anything else.
+Environment=ANTENNA=internal
+
+# Two probes per cycle: USB adapter -> each lock. Each ExecStart is
+# an independent invocation; common.sh's flock serializes them.
+ExecStart=/home/pi/ble-probe/ble-probe.sh /home/pi/gatekeeper-hoftor usb 8A:88:4B:C2:9C:B9 hoftor
+ExecStart=/home/pi/ble-probe/ble-probe.sh /home/pi/gatekeeper-km     usb 8A:88:4B:C2:9C:B9 km
+
+Nice=10
+# Each probe = ~3-30s (connect + optional retry); 2 probes back-to-back.
+# Hard ceiling well above worst case so a runaway is killed.
+TimeoutStartSec=120

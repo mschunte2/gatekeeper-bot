@@ -640,6 +640,70 @@ is used. The bot relays stderr to the chat for text commands. See
 | App icon stays "Unknown" after restart                      | Bot couldn't reach the lock to seed the state. Check `journalctl -u deltabot` for the startup `status probe` line; tap the door button (sends `status`) to retry on demand. |
 | App buttons do nothing                                      | Chat not in `ALLOWED_CHATS`, or the bot can't see your webxdc status updates. Check `journalctl -u deltabot` for `app cmd from chat N` lines. |
 
+### Link-quality monitoring (optional)
+
+When `send-command.sh` starts timing out intermittently, the question
+is usually *"is it my antenna, my adapter placement, the lock
+battery, or 2.4 GHz interference?"* — and the only honest answer
+comes from collecting samples across hours/days, not eyeballing
+single failures.
+
+`tools/ble-probe.sh` + a 30-min systemd timer do exactly that. Each
+firing runs `send-command.sh status` against every configured lock
+and appends a CSV row with timestamp, antenna label, lock label,
+return code, wall-clock duration, and base64-encoded stderr (so
+fragment-retries and timeout messages survive in the log without
+breaking parsers).
+
+Why connection-based, not passive RSSI: Eqiva locks don't advertise
+when idle (battery conservation), so a passive `bluetoothctl scan`
+never sees them. A real connect-and-disconnect measures what
+actually matters — does the lock answer, and how fast.
+
+**Install** (Pi, as `pi`):
+
+```bash
+# 1. Drop the scripts somewhere stable (independent of any bot dir).
+mkdir -p /home/pi/ble-probe
+cp tools/ble-probe.sh tools/ble-probe-stats.sh /home/pi/ble-probe/
+chmod +x /home/pi/ble-probe/*.sh
+
+# 2. Install the unit + timer. Edit ble-probe.service first to set
+#    the right bot dirs, lock labels, and ANTENNA= label for your setup.
+sudo cp systemd-unit/ble-probe.service systemd-unit/ble-probe.timer \
+    /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now ble-probe.timer
+```
+
+**Antenna comparison workflow:**
+
+1. Leave the timer running for ~24 h with the current antenna
+   (`Environment=ANTENNA=internal` or whatever label you choose).
+2. Swap antennas. Edit `/etc/systemd/system/ble-probe.service` and
+   bump `ANTENNA=` to a new label (e.g. `ANTENNA=ext-5dbi`).
+3. `sudo systemctl daemon-reload` (no restart needed; the next
+   firing picks up the new label automatically).
+4. After another ~24 h, compare:
+   ```bash
+   /home/pi/ble-probe/ble-probe-stats.sh --since='2 days ago'
+   ```
+   Output groups by `(antenna, adapter, lock)` and shows sample
+   count, success rate, return-code histogram, and
+   min/p10/median/p90/max latency.
+
+The probe is read-only, takes the same flock as the bots (so it
+never collides with a real `/auf`), and survives reboots
+(`Persistent=true` catches up missed runs after downtime). Battery
+cost: ~48 connect-disconnect cycles per lock per day — meaningful
+but not crippling, ~5× normal user activity.
+
+Logs:
+
+- `/home/pi/ble-probe/probe.log` — CSV, one row per probe.
+- `/home/pi/ble-probe/debug/<ts>_<adapter>_<lock>.txt` — full
+  stderr per sample, useful for diagnosing specific failures.
+
 ---
 
 ## 9. Security notes

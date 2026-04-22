@@ -242,6 +242,34 @@ systemd-unit/              service file
 - Never use `hcitool` for scanning or debugging — it conflicts with
   bluetoothd. Use `bluetoothctl` exclusively (goes through D-Bus).
 
+## Link-quality monitoring (`tools/ble-probe.sh`)
+
+A 30-min systemd timer (`systemd-unit/ble-probe.{service,timer}`)
+runs `send-command.sh status` against every configured lock and
+appends a CSV row to `/home/pi/ble-probe/probe.log`:
+`ts,antenna,adapter,lock,rc,duration_ms,stderr_b64`. Use
+`tools/ble-probe-stats.sh [--since=<spec>]` to summarize.
+
+Why connection-based, not RSSI: Eqiva locks don't advertise when
+idle (verified via 30 s `btmon` capture -- HCI sees other devices
+at -74 dBm but never the locks), so passive scanning is useless.
+A real connect-disconnect cycle measures what users actually
+experience.
+
+The `ANTENNA=` env var in `ble-probe.service` is a free-form tag
+baked into every sample. Swap antennas → bump the label →
+`systemctl daemon-reload` → next firing self-tags. Stats group by
+`(antenna, adapter, lock)` so a 24h-before / 24h-after comparison
+needs zero data-juggling.
+
+The probe acquires the same flock as the bots, so it never
+collides with `/auf`. Battery cost is ~48 cycles per lock per day
+(roughly 5x normal user activity) -- meaningful but not crippling.
+
+The built-in BCM43430A1 adapter is paired with neither lock and
+is known-broken on this Pi (BT_SECURITY: Invalid argument); the
+probe targets the USB dongle only.
+
 ## Known issues / accepted trade-offs
 
 - `appdirs` (used for `user_config_dir`) is deprecated upstream in
