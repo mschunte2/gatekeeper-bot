@@ -26,7 +26,20 @@ const PENDING_VERB = {
   status: "checking",
 };
 
-const PENDING_TIMEOUT_MS = 60000;
+// Staged pending-state messages. The bot's event loop blocks on a
+// single subprocess.run call, so a BLE retry cascade can hold the lock
+// up to ~3 minutes before a response arrives. Rather than sit in the
+// initial "locking…" state for that long (making the app look frozen),
+// swap the status text once the typical single-attempt window is past.
+// We have no ground-truth signal for "bot is retrying" — these timers
+// are purely local bets based on elapsed time, so the copy is kept
+// soft ("may take a while") to stay accurate whether the operation is
+// merely slow or actually in the retry path.
+const PENDING_STAGES = [
+  { at: 25000, text: "still working… may take a while" },
+  { at: 90000, text: "retrying — up to ~3 min total, please be patient" },
+];
+const PENDING_TIMEOUT_MS = 210000;
 
 const doorBtn = document.getElementById("doorBtn");
 const doorIcon = document.getElementById("doorIcon");
@@ -43,13 +56,11 @@ function fmtHHMM(ts) {
          String(d.getMinutes()).padStart(2, "0");
 }
 
-let _pendingTimer = null;
+let _pendingTimers = [];
 
 function clearPending() {
-  if (_pendingTimer !== null) {
-    clearTimeout(_pendingTimer);
-    _pendingTimer = null;
-  }
+  for (const t of _pendingTimers) clearTimeout(t);
+  _pendingTimers = [];
   doorBtn.classList.remove("pending");
   statusEl.classList.remove("pending");
 }
@@ -66,14 +77,22 @@ function setDoorState(state) {
 function setPending(command) {
   doorBtn.classList.add("pending");
   statusEl.classList.add("pending");
-  statusText.textContent = "Door: " + (PENDING_VERB[command] || "working") + "…";
-  if (_pendingTimer !== null) clearTimeout(_pendingTimer);
-  _pendingTimer = setTimeout(() => {
-    _pendingTimer = null;
+  const verb = PENDING_VERB[command] || "working";
+  statusText.textContent = "Door: " + verb + "…";
+  clearPending();
+  doorBtn.classList.add("pending");
+  statusEl.classList.add("pending");
+  for (const stage of PENDING_STAGES) {
+    _pendingTimers.push(setTimeout(() => {
+      statusText.textContent = "Door: " + verb + " — " + stage.text;
+    }, stage.at));
+  }
+  _pendingTimers.push(setTimeout(() => {
+    _pendingTimers = [];
     doorBtn.classList.remove("pending");
     statusEl.classList.remove("pending");
     statusText.textContent = "Door: timeout (no response)";
-  }, PENDING_TIMEOUT_MS);
+  }, PENDING_TIMEOUT_MS));
 }
 
 function setDoorName(name) {

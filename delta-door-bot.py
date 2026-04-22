@@ -23,9 +23,11 @@ operations. /id is the only command exempt (needed for setup).
 """
 
 import json
+import logging
 import os
 import re
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -38,6 +40,28 @@ from deltabot_cli import BotCli
 # the same Pi MUST use different names so their state doesn't collide.
 BOT_NAME = (os.environ.get("BOT_NAME") or "").strip() or "gatekeeper"
 cli = BotCli(BOT_NAME)
+
+# Dedicated logger for messages we *must* see (in particular DEBUG-level
+# subprocess traces). deltabot-cli wires bot.logger via its own
+# RichHandler; under systemd that handler has been observed to drop
+# DEBUG-level emissions even when --logging debug is passed. Rather
+# than diagnose the RichHandler/systemd interaction, we keep a private
+# StreamHandler pointed at stderr (captured by journald) and honour
+# LOG_LEVEL from .env directly. bot.logger is still used for the
+# existing INFO/WARNING/ERROR messages (they reach the journal fine);
+# log.debug is used where we actually need DEBUG to survive.
+log = logging.getLogger("gatekeeper")
+if not log.handlers:
+    _h = logging.StreamHandler(sys.stderr)
+    _h.setFormatter(logging.Formatter(
+        "[%(asctime)s] %(levelname)-8s %(message)s",
+        datefmt="%m/%d/%y %H:%M:%S",
+    ))
+    log.addHandler(_h)
+log.setLevel(getattr(
+    logging, os.environ.get("LOG_LEVEL", "info").upper(), logging.INFO,
+))
+log.propagate = False
 
 # ---------------------------------------------------------------- constants
 
@@ -90,8 +114,25 @@ _AUDIT_STATE = {
     "unknown": ("❓", "Manual lock/unlock"),
 }
 
-MAX_AGE_SECONDS = 60  # text-message replay-protection window
-MAX_APP_AGE_SECONDS = 45  # webxdc button-press replay-protection window
+# Replay-protection windows. Any command older than these values when
+# the bot actually processes it is dropped.
+#
+# MAX_AGE_SECONDS (text) is sized to exceed the worst realistic BLE
+# stall. If send-command.sh hits its retry path (first attempt timeout
+# + second attempt under SEC_LEVEL=low), a single status/lock call can
+# block the event loop for ~3 minutes. A typed /status arriving during
+# that stall would previously age past a 60 s window and be silently
+# dropped (observed 2026-04-22). 200 s keeps the guard meaningful
+# against genuinely stale replays while absorbing a single retry
+# cascade.
+#
+# MAX_APP_AGE_SECONDS (webxdc) stays tight: webxdc button taps are
+# rarely typed during a stall (the app shows its own pending state),
+# and the main threat this window exists for -- a pile-up of queued
+# button-press updates replaying after the bot reconnects from an
+# offline period -- is better served by a short window.
+MAX_AGE_SECONDS = 200
+MAX_APP_AGE_SECONDS = 45
 
 # Strip control chars / newlines from values that arrive over the wire
 # and might end up in log lines or chat messages.
@@ -431,7 +472,7 @@ def run_lock_command(
         stderr=subprocess.PIPE,
     )
 
-    bot.logger.debug(
+    log.debug(
         f"send-command.sh {command} rc={proc.returncode}\n"
         f"---stdout---\n{proc.stdout.strip()}\n"
         f"---stderr---\n{proc.stderr.strip()}"
@@ -466,7 +507,7 @@ def run_lock_command(
             new_state = "unknown"
         else:
             if parsed == "unknown":
-                bot.logger.debug(
+                log.debug(
                     f"send-command.sh {command} -> lock reported "
                     f"UNKNOWN/MOVING; raw stdout:\n{proc.stdout.strip()}"
                 )
@@ -535,7 +576,7 @@ def log_event(bot, accid, event):
     # Every Delta Chat core event at DEBUG -- useful when tracing an
     # issue end-to-end, but floods the journal at INFO. Run with
     # LOG_LEVEL=debug in .env when you need the full firehose.
-    bot.logger.debug(event)
+    log.debug("%s", event)
 
 
 @cli.on(events.RawEvent)
@@ -745,7 +786,7 @@ def _on_start(bot, _args):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        bot.logger.debug(
+        log.debug(
             f"startup status probe rc={proc.returncode}\n"
             f"---stdout---\n{proc.stdout.strip()}\n"
             f"---stderr---\n{proc.stderr.strip()}"
@@ -761,7 +802,7 @@ def _on_start(bot, _args):
                 _last_known_state = "unknown"
             else:
                 if parsed == "unknown":
-                    bot.logger.debug(
+                    log.debug(
                         f"startup status probe -> lock reported "
                         f"UNKNOWN/MOVING; raw stdout:\n"
                         f"{proc.stdout.strip()}"
