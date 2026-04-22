@@ -189,7 +189,9 @@ change propagates everywhere.
 ```json
 {"payload": {"config": {"door_name": "Hoftor"}}}
 ```
-Pushed on `/apps`, on startup, and via opportunistic learning.
+Pushed on `/apps` and on startup. `/apps` is the sole onboarding
+gate -- webxdc updates from msgids the bot has never recorded are
+dropped with a log line pointing the user at `/apps` to register.
 
 ### Bot → app (ack)
 ```json

@@ -617,51 +617,20 @@ def on_webxdc_update(bot, accid, event):
         bot.logger.warning(f"app cmd from non-allowed chat {chatid} rejected")
         return
 
-    # Opportunistic learning: if this msgid isn't in our persisted map
-    # (e.g. app was sent by an earlier bot version, /apps was never used,
-    # or .json got out of sync), record it now and seed it with current
-    # door_name + state so the icon updates immediately rather than
-    # waiting for the next state-changing command.
-    #
-    # Under the per-app tracking shape we need to know *which* app this
-    # msgid is. We derive the app_id from the attached filename's stem
-    # (gatekeeper.xdc -> "gatekeeper"); that matches the app_id used by
-    # _send_apps (`_xdc_paths()` returns `p.stem`). If we can't derive
-    # it (filename missing or doesn't end in .xdc), we log and skip --
-    # the user's next /apps will reseed properly.
-    chat_apps = _msgid_map.setdefault(chatid, {})
+    # /apps is the sole onboarding gate: apps are only recognised
+    # once sent through /apps, which records their msgid in
+    # _msgid_map. An update from an unknown msgid means either the
+    # app was delivered out-of-band or the chat has never run /apps;
+    # drop the command and point the user at the fix. This avoids
+    # executing BLE commands for app instances whose state pushes we
+    # can't reach anyway.
+    chat_apps = _msgid_map.get(chatid, {})
     if msgid not in chat_apps.values():
-        learned_id: str | None = None
-        for attr in ("file_name", "filename"):
-            fname = getattr(msg, attr, None)
-            if isinstance(fname, str) and fname.endswith(".xdc"):
-                learned_id = Path(fname).stem
-                break
-        if learned_id:
-            chat_apps[learned_id] = msgid
-            _save_msgids(_msgid_map)
-            bot.logger.info(
-                f"learned app {learned_id!r} msgid={msgid} for chat {chatid}"
-            )
-            _push_door_name(bot, accid, msgid)
-            try:
-                bot.rpc.send_webxdc_status_update(
-                    accid, msgid,
-                    json.dumps({"payload": {"response": {
-                        "name": "bot",
-                        "text": _last_known_state,
-                        "battery_low": _last_battery_low,
-                        "ts": _last_state_ts,
-                    }}}),
-                    "",
-                )
-            except Exception as ex:
-                bot.logger.warning(f"seed state push to msgid {msgid} failed: {ex}")
-        else:
-            bot.logger.info(
-                f"could not derive app_id for msgid={msgid} in chat {chatid} "
-                f"(no .xdc file_name); not learning -- run /apps to reseed"
-            )
+        bot.logger.warning(
+            f"webxdc update from unknown msgid={msgid} in chat {chatid} "
+            f"({name} via {app_id}); run /apps in this chat to register"
+        )
+        return
 
     if cmd not in VALID_COMMANDS:
         bot.logger.warning(f"refusing webxdc command {cmd!r}")
