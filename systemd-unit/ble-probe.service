@@ -1,5 +1,5 @@
 [Unit]
-Description=BLE link-quality probe (send-command.sh status x 2 locks x 2 adapters)
+Description=BLE link-quality probe (send-command.sh status x 2 locks x 2 USB adapters)
 # Don't fight the bots at startup; run after bluetoothd is up.
 After=bluetooth.service deltabot-gatekeeper-hoftor.service deltabot-gatekeeper-km.service
 Wants=bluetooth.service
@@ -15,23 +15,30 @@ Group=pi
 # tool can group "before" vs "after" without you doing anything else.
 Environment=ANTENNA=internal
 
-# Four probes per cycle: {USB, built-in} x {hoftor, km}. Each
-# ExecStart is an independent invocation; common.sh's flock
-# (per-adapter) serializes them. The empty ADAPTER_MAC for the
-# built-in probes forces common.sh's UART fallback (= built-in).
+# Four probes per cycle: {usb, usb2} x {hoftor, km}. Each ExecStart
+# is an independent invocation; common.sh's flock (per-adapter)
+# serializes them.
 #
-# Note: the built-in adapter is currently NOT paired with either
-# lock, so its probes traverse the slow SEC_LEVEL=low fallback
-# path (still functional, ~10-15s instead of ~3s, with a benign
-# "Bond may be lost" warning in stderr). Pair both locks to the
-# built-in via pair-lock.sh if you want a fair fast-path
-# comparison -- see README §8.
+# Adapters (all paired with both locks):
+#   usb  = hci1, RTL8761B, BD 8A:88:4B:C2:9C:B9 (original USB dongle)
+#   usb2 = hci2, RTL8761B, BD 8C:68:AB:A0:31:5F (second USB dongle)
+#
+# The built-in BCM43430A1 adapter (hci0) is also paired with both
+# locks and reachable in principle, but our 24h+ baseline showed
+# 5% success on Hoftor and 26% on KM (chronically marginal signal
+# margin from the Pi Zero 2 W's chip antenna). Keeping it in the
+# rotation costs ~6 min per cycle (two ~3-min timeouts) and burns
+# lock battery on doomed connection attempts, with no further
+# information to gain. To re-enable: uncomment the lines below.
+#
+# ExecStart=/home/pi/ble-probe/ble-probe.sh /home/pi/gatekeeper-hoftor builtin "" hoftor
+# ExecStart=/home/pi/ble-probe/ble-probe.sh /home/pi/gatekeeper-km     builtin "" km
 ExecStart=/home/pi/ble-probe/ble-probe.sh /home/pi/gatekeeper-hoftor usb     8A:88:4B:C2:9C:B9 hoftor
 ExecStart=/home/pi/ble-probe/ble-probe.sh /home/pi/gatekeeper-km     usb     8A:88:4B:C2:9C:B9 km
-ExecStart=/home/pi/ble-probe/ble-probe.sh /home/pi/gatekeeper-hoftor builtin ""                hoftor
-ExecStart=/home/pi/ble-probe/ble-probe.sh /home/pi/gatekeeper-km     builtin ""                km
+ExecStart=/home/pi/ble-probe/ble-probe.sh /home/pi/gatekeeper-hoftor usb2    8C:68:AB:A0:31:5F hoftor
+ExecStart=/home/pi/ble-probe/ble-probe.sh /home/pi/gatekeeper-km     usb2    8C:68:AB:A0:31:5F km
 
 Nice=10
-# Each probe = ~3-30s (connect + optional retry); 4 probes back-to-back.
-# Hard ceiling well above worst case so a runaway is killed.
+# 4 probes back-to-back, each ~3-30s. Hard ceiling well above
+# worst case so a runaway is killed.
 TimeoutStartSec=240
