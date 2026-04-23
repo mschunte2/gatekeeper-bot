@@ -60,6 +60,18 @@ check_usb_hci_ok() {
 # adapter entirely and exit 0 ("no USB adapter") erroneously.
 sleep "$INITIAL_GRACE_SECONDS"
 
+# Clear any soft-blocks that systemd-rfkill (or a stale /var/lib/
+# systemd/rfkill state file) sets on Bluetooth controllers at boot.
+# Symptom: hciconfig shows the adapter present, but `hciconfig hciN
+# up` fails with "Operation not possible due to RF-kill (132)".
+# Hit when adding a third controller (hci2) -- systemd-rfkill
+# soft-blocked it on first appearance. Unblocking the entire
+# bluetooth class is safe; we don't use rfkill for any policy
+# purpose here.
+if command -v rfkill >/dev/null 2>&1; then
+    rfkill unblock bluetooth 2>/dev/null || true
+fi
+
 if check_usb_hci_ok; then
     log "USB BT adapter(s) ready at boot; no recovery needed"
     exit 0
