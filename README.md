@@ -9,8 +9,8 @@ chat. A small Python daemon (`delta-door-bot.py`) listens on a
 [Delta Chat](https://delta.chat/) account. Two control surfaces share
 one backend:
 
-- **Text commands** -- send `/lock` / `/unlock` / `/status` from an
-  allowed chat. Original behaviour, preserved verbatim.
+- **Text commands** -- send `/lock` / `/unlock` / `/open` / `/status`
+  from an allowed chat.
 - **Gatekeeper webxdc app** -- full lock control inside the chat:
   closed-lock / open-lock / door buttons, live status icon, "Last
   update HH:MM" line. Tagged internally as `app: "gatekeeper"`.
@@ -172,7 +172,7 @@ $EDITOR .env
 | `SEC_LEVEL`       | `low` (unencrypted, works on any lock) or `medium` (LE-encrypted; requires a BlueZ bond -- see section 5). If the bond is lost, `send-command.sh` automatically retries with `low` and prints a warning. |
 | `CONNECT_TIMEOUT` | Seconds to wait for the BLE connection; `75` is a safe default.                                         |
 | `TIMEOUT`         | Overall wall-clock timeout per command. `90` default.                                                   |
-| `ALLOWED_CHATS`   | Comma-separated Delta Chat chat-ids that may operate the lock. Gates **both** text commands (`/lock`, `/unlock`, `/status`) **and** the webxdc app -- chats in this list automatically receive the app and may use either path. `/id` is the only command that bypasses this check (so you can discover chat ids during setup). Empty = nobody. See section 6. |
+| `ALLOWED_CHATS`   | Comma-separated Delta Chat chat-ids that may operate the lock. Gates **both** text commands (`/lock`, `/unlock`, `/open`, `/status`) **and** the webxdc app -- chats in this list automatically receive the app and may use either path. `/id` is the only command that bypasses this check (so you can discover chat ids during setup). Empty = nobody. See section 6. |
 | `DOOR_NAME`       | Display name shown as the heading inside the webxdc app (e.g. `"Front Gate"`). Pushed silently to every active app instance on startup. Default: `Door`. |
 | `HELP_MESSAGE`    | Optional override for the bot's help text (multi-line supported). Empty = a sensible English default. Put your contact info / localized aliases / extra commands here. |
 | `LOG_LEVEL`       | Bot log level passed to deltabot-cli as `--logging`. One of `trace` / `debug` / `info` / `warning` / `error`. Default `info`. Use `debug` while stabilising a change -- the `log_event` hook (every raw Delta Chat core event) logs at DEBUG, so only `debug` surfaces it. Flip back to `info` (or remove the line) once the journal gets too chatty. |
@@ -528,14 +528,15 @@ for background on bonding.
 
 4. From the allowed chat:
 
-   | command             | effect                                            |
-   |---------------------|---------------------------------------------------|
-   | `/status`           | current lock state                                |
-   | `/lock` / `/zu`     | engage the bolt                                   |
-   | `/unlock` / `/auf`  | retract the bolt                                  |
-   | `/apps`             | (re)deliver every `apps/*.xdc` to this chat. Always sends fresh copies and deletes prior tracked copies for all members (so late-joining members also get the app). Also retracts any app whose artefact has been removed from `apps/` (e.g. moved to `apps-disabled/`). Currently delivers Gatekeeper. |
-   | `/id`               | show this chat's id (always works, no permission) |
-   | anything else       | help text                                         |
+   | command                | effect                                            |
+   |------------------------|---------------------------------------------------|
+   | `/status`              | current lock state                                |
+   | `/lock` / `/zu`        | engage the bolt                                   |
+   | `/unlock` / `/auf`     | retract the bolt only (latch still engaged)       |
+   | `/open` / `/oeffnen`   | retract bolt and latch (door swings open)         |
+   | `/apps`                | (re)deliver every `apps/*.xdc` to this chat. Always sends fresh copies and deletes prior tracked copies for all members (so late-joining members also get the app). Also retracts any app whose artefact has been removed from `apps/` (e.g. moved to `apps-disabled/`). Currently delivers Gatekeeper. |
+   | `/id`                  | show this chat's id (always works, no permission) |
+   | anything else          | help text                                         |
 
    Reactions: hourglass on receipt, checkmark on completion, cross if the
    message is older than 60 s (replay-protection). Webxdc button
@@ -721,7 +722,7 @@ Logs:
   directory is protected only by filesystem permissions on the Pi.
 - Only chats listed in `ALLOWED_CHATS` can trigger lock operations.
   This single allow-list gates **both** text commands (`/lock`,
-  `/unlock`, `/status`, `/app`) and the webxdc app: chats in this list
+  `/unlock`, `/open`, `/status`) and the webxdc app: chats in this list
   automatically receive the app and any chat member can tap its
   buttons. `/id` is the only command that bypasses the check (so you
   can discover chat ids during setup).

@@ -3,7 +3,8 @@
 
 Text path:
     /lock | /zu       -> send-command.sh lock
-    /unlock | /auf    -> send-command.sh unlock
+    /unlock | /auf    -> send-command.sh unlock  (retract bolt only)
+    /open | /oeffnen  -> send-command.sh open    (retract bolt + latch)
     /status           -> send-command.sh status
     /id               -> reply with this chat's id (always allowed)
     /apps             -> (re)deliver webxdc apps; replaces prior copies
@@ -22,11 +23,9 @@ operations. /id is the only command exempt (needed for setup).
 """
 
 import json
-import logging
 import os
 import re
 import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -40,34 +39,13 @@ from deltabot_cli import BotCli
 BOT_NAME = (os.environ.get("BOT_NAME") or "").strip() or "gatekeeper"
 cli = BotCli(BOT_NAME)
 
-# Dedicated logger for messages we *must* see (in particular DEBUG-level
-# subprocess traces). deltabot-cli wires bot.logger via its own
-# RichHandler; under systemd that handler has been observed to drop
-# DEBUG-level emissions even when --logging debug is passed. Rather
-# than diagnose the RichHandler/systemd interaction, we keep a private
-# StreamHandler pointed at stderr (captured by journald) and honour
-# LOG_LEVEL from .env directly. bot.logger is still used for the
-# existing INFO/WARNING/ERROR messages (they reach the journal fine);
-# log.debug is used where we actually need DEBUG to survive.
-log = logging.getLogger("gatekeeper")
-if not log.handlers:
-    _h = logging.StreamHandler(sys.stderr)
-    _h.setFormatter(logging.Formatter(
-        "[%(asctime)s] %(levelname)-8s %(message)s",
-        datefmt="%m/%d/%y %H:%M:%S",
-    ))
-    log.addHandler(_h)
-log.setLevel(getattr(
-    logging, os.environ.get("LOG_LEVEL", "info").upper(), logging.INFO,
-))
-log.propagate = False
-
 # ---------------------------------------------------------------- constants
 
 DEFAULT_HELP_MESSAGE = (
     "This bot operates a lock:\n"
     " /lock or /zu - locks gate\n"
-    " /unlock or /auf - unlocks gate\n"
+    " /unlock or /auf - unlocks gate (retracts bolt only)\n"
+    " /open or /oeffnen - opens gate (retracts bolt and latch)\n"
     " /status - print current status\n"
     " /apps - (re)deliver webxdc control apps; replaces prior copies so late-joining chat members get a fresh install\n"
     " /id - get this chat's id\n"
@@ -94,23 +72,18 @@ def _xdc_paths() -> list[tuple[str, str]]:
 # paths. Anything else is rejected before reaching the subprocess.
 VALID_COMMANDS = {"lock", "unlock", "open", "status"}
 
-# Audit line shown in chat when an app button triggers a command.
-# (emoji, past-tense verb) -- used as: "{emoji} {DOOR_NAME} {verb} by {name}"
-_AUDIT_VERB = {
-    "lock": ("🔒", "locked"),
-    "unlock": ("🟢", "unlocked"),
-    "open": ("🟢", "opened"),
-    "status": ("ℹ️", "status checked"),
-}
-
-# Audit line shown for observed state transitions that are NOT the
-# direct result of an app command. Currently only 'unknown', emitted
-# when a status probe catches a manual key/knob operation (the lock
-# cannot determine bolt direction after a physical turn, so it reports
-# UNKNOWN). Keyed by state so additional transitions can be added here
-# without touching the audit-emission code.
-_AUDIT_STATE = {
-    "unknown": ("❓", "Manual lock/unlock"),
+# Audit line emojis + verbs, keyed by the thing the audit is about.
+# Command keys (lock/unlock/open/status) apply to app-button presses;
+# the "unknown" state key applies when a status probe catches a manual
+# key/knob turn (the lock reports UNKNOWN because it cannot determine
+# bolt direction after a physical operation). Command and state keys
+# don't collide, so one table covers both cases.
+_AUDIT = {
+    "lock":    ("🔒",  "locked"),
+    "unlock":  ("🟢",  "unlocked"),
+    "open":    ("🟢",  "opened"),
+    "status":  ("ℹ️",  "status checked"),
+    "unknown": ("❓",  "Manual lock/unlock"),
 }
 
 # Replay-protection windows. Any command older than these values when
@@ -139,12 +112,6 @@ _CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
 def _sanitize(value, fallback: str = "?", max_len: int = 64) -> str:
-    if value is not None and not isinstance(value, str):
-        # Pathological peer: webxdc spec says these fields are strings.
-        # Log once per occurrence so we can notice if a client breaks
-        # the contract; fall through to the str() coercion anyway so
-        # this can't crash the request path.
-        log.debug("sanitize received non-string %r (%s)", value, type(value).__name__)
     if not isinstance(value, str):
         value = str(value) if value is not None else ""
     cleaned = _CTRL_RE.sub(" ", value).strip()
@@ -155,31 +122,13 @@ def _sanitize(value, fallback: str = "?", max_len: int = 64) -> str:
 # ------------------------------------------------------- env-derived config
 
 
-def _parse_allowed_chats(raw: str) -> set[int]:
-    out: set[int] = set()
-    bad: list[str] = []
-    for x in raw.split(","):
-        s = x.strip()
-        if not s:
-            continue
-        try:
-            out.add(int(s))
-        except ValueError:
-            bad.append(s)
-    if bad:
-        # Caller can't use the bot logger yet (module import time), but
-        # a bad ALLOWED_CHATS value silently dropping entries would look
-        # like a mystery permission denial at runtime. Print + flush so
-        # it lands in the journal before the bot reaches logger setup.
-        print(
-            f"[gatekeeper-bot] ALLOWED_CHATS: ignoring non-integer "
-            f"entries {bad}",
-            flush=True,
-        )
-    return out
-
-
-ALLOWED_CHATS: set[int] = _parse_allowed_chats(os.environ.get("ALLOWED_CHATS", ""))
+# Comma-separated list of integer chat ids. A malformed entry raises
+# ValueError at import time and systemd surfaces it immediately --
+# better than silently ignoring the bad entry and staring at a
+# mystery "permission denied" at runtime.
+ALLOWED_CHATS: set[int] = {
+    int(x) for x in os.environ.get("ALLOWED_CHATS", "").split(",") if x.strip()
+}
 DOOR_NAME = (os.environ.get("DOOR_NAME") or "").strip() or "Door"
 
 # ----------------------------------------------------- persistent state map
@@ -189,28 +138,22 @@ APP_MSGIDS_PATH = STATE_DIR / "app_msgids.json"
 
 
 def _load_msgids() -> dict[int, dict[str, int]]:
-    """Load chat_id -> {app_id -> msgid} from disk."""
+    """Load chat_id -> {app_id -> msgid} from disk.
+
+    Only `_save_msgids` writes this file, and it always writes
+    well-formed data, so we don't defensively filter bad entries --
+    a parse error means corruption or a manual edit gone wrong, and
+    starting from empty tracking is the correct recovery (next /apps
+    reseeds every chat).
+    """
     try:
         raw = json.loads(APP_MSGIDS_PATH.read_text())
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
-    out: dict[int, dict[str, int]] = {}
-    for k, v in raw.items():
-        try:
-            chat = int(k)
-        except (TypeError, ValueError):
-            continue
-        if not isinstance(v, dict):
-            continue
-        apps: dict[str, int] = {}
-        for app_id, msgid in v.items():
-            try:
-                apps[str(app_id)] = int(msgid)
-            except (TypeError, ValueError):
-                continue
-        if apps:
-            out[chat] = apps
-    return out
+    return {
+        int(chat): {str(app_id): int(msgid) for app_id, msgid in apps.items()}
+        for chat, apps in raw.items()
+    }
 
 
 def _save_msgids(data: dict[int, dict[str, int]]) -> None:
@@ -241,109 +184,97 @@ _BATTERY_RE = re.compile(
 )
 
 
-def parse_state_from_output(text: str) -> str | None:
-    """Return 'locked'/'unlocked'/'unknown' if the output reports a state,
-    else None.
+def parse_lock_output(text: str) -> tuple[str | None, bool | None]:
+    """Return `(state, battery_low)` parsed from keyblepy's stdout.
 
-    'unknown' covers keyblepy's UNKNOWN (lock cannot determine bolt
-    direction, e.g. after a manual key or knob turn) and MOVING (motor
-    running, transient). These are real lock-reported states, not parse
-    failures, and should not trigger the 'parse returned None' warning.
-    None is reserved for output we could not match at all.
+    `state` is 'locked' / 'unlocked' / 'unknown' / None.
+    - 'unknown' covers keyblepy's UNKNOWN (lock cannot determine bolt
+      direction, e.g. after a manual key or knob turn) and MOVING
+      (motor running, transient). These are real lock-reported states,
+      not parse failures, and should not escalate to WARN.
+    - None is reserved for output we could not match at all.
+
+    `battery_low` is True / False / None. None means "not reported"
+    (e.g. lock/unlock commands, which don't emit a status dict);
+    callers should preserve the last-known value in that case, not
+    overwrite it with False.
+
+    Single-pass scan so the caller doesn't have to iterate twice.
     """
+    state: str | None = None
+    battery: bool | None = None
     for line in text.splitlines():
-        m = _RESULT_RE.match(line)
-        if m:
-            return "locked" if m.group(1).lower() == "locked" else "unlocked"
-        m = _STATUS_RE.search(line)
-        if m:
-            v = m.group(1).upper()
-            if v == "LOCKED":
-                return "locked"
-            if v in {"UNLOCKED", "OPENED"}:
-                return "unlocked"
-            if v in {"UNKNOWN", "MOVING"}:
-                return "unknown"
-    return None
-
-
-def parse_battery_low_from_output(text: str) -> bool | None:
-    """Return True/False if the output carries a battery_low field, else None.
-
-    None means "not reported" (e.g. lock/unlock commands, which don't emit
-    a status dict). Callers should preserve the last-known value in that
-    case, not overwrite it with False.
-    """
-    for line in text.splitlines():
-        m = _BATTERY_RE.search(line)
-        if m:
-            return m.group(1).lower() in ("true", "1")
-    return None
+        if state is None:
+            m = _RESULT_RE.match(line)
+            if m:
+                state = "locked" if m.group(1).lower() == "locked" else "unlocked"
+            else:
+                m = _STATUS_RE.search(line)
+                if m:
+                    v = m.group(1).upper()
+                    if v == "LOCKED":
+                        state = "locked"
+                    elif v in {"UNLOCKED", "OPENED"}:
+                        state = "unlocked"
+                    elif v in {"UNKNOWN", "MOVING"}:
+                        state = "unknown"
+        if battery is None:
+            m = _BATTERY_RE.search(line)
+            if m:
+                battery = m.group(1).lower() in ("true", "1")
+    return state, battery
 
 
 # ---------------------------------------------------------------- app push
 
-def _push_state(bot, accid: int, state: str) -> int:
-    """Broadcast `state` to every known app instance in an ALLOWED chat.
+def _broadcast(
+    bot, accid: int, payload: dict, target_msgid: int | None = None,
+) -> int:
+    """Push a webxdc update to app instances.
 
-    Skips msgids in chats that are no longer in ALLOWED_CHATS -- the
-    state file may carry leftovers from chats the admin has since
-    removed from the allow-list.
+    With `target_msgid`, push only that single instance (used for
+    per-instance config updates like door_name). Without it, iterate
+    every msgid in an ALLOWED chat -- chats removed from the allow-list
+    since the last save are skipped so stale state doesn't leak.
+    Returns the count of successful pushes.
     """
-    update = {
-        "payload": {
-            "response": {
-                "name": "bot",
-                "text": state,
-                "battery_low": _last_battery_low,
-                "ts": _last_state_ts,
-            }
-        }
-    }
-    body = json.dumps(update)
+    body = json.dumps({"payload": payload})
+    if target_msgid is not None:
+        targets = [(None, target_msgid)]
+    else:
+        targets = [
+            (chatid, msgid)
+            for chatid, apps in list(_msgid_map.items())
+            if _is_allowed(chatid)
+            for msgid in apps.values()
+        ]
     pushed = 0
-    for chatid, apps in list(_msgid_map.items()):
-        if not _is_allowed(chatid):
-            continue
-        for msgid in apps.values():
-            try:
-                bot.rpc.send_webxdc_status_update(accid, msgid, body, "")
-                pushed += 1
-            except Exception as ex:
-                bot.logger.warning(
-                    f"push state to chat {chatid} msgid {msgid} failed: {ex}"
-                )
+    for chatid, msgid in targets:
+        try:
+            bot.rpc.send_webxdc_status_update(accid, msgid, body, "")
+            pushed += 1
+        except Exception as ex:
+            bot.logger.warning(
+                f"webxdc push to chat {chatid} msgid {msgid} failed: {ex}"
+            )
     return pushed
+
+
+def _push_state(bot, accid: int, state: str) -> int:
+    return _broadcast(bot, accid, {"response": {
+        "name": "bot",
+        "text": state,
+        "battery_low": _last_battery_low,
+        "ts": _last_state_ts,
+    }})
 
 
 def _push_door_name(bot, accid: int, msgid: int) -> None:
-    body = json.dumps({"payload": {"config": {"door_name": DOOR_NAME}}})
-    try:
-        bot.rpc.send_webxdc_status_update(accid, msgid, body, "")
-    except Exception as ex:
-        bot.logger.warning(f"push door_name to msgid {msgid} failed: {ex}")
+    _broadcast(bot, accid, {"config": {"door_name": DOOR_NAME}}, target_msgid=msgid)
 
 
 def _push_ack(bot, accid: int, cmd: str) -> int:
-    """Tell every active app instance that we received a command and are
-    about to run it. Apps may use this to show a transitional 'in
-    progress' visual without guessing how long the BLE round-trip
-    takes. Apps that don't care just ignore the payload.
-    """
-    body = json.dumps({"payload": {"ack": cmd}})
-    pushed = 0
-    for chatid, apps in list(_msgid_map.items()):
-        if not _is_allowed(chatid):
-            continue
-        for msgid in apps.values():
-            try:
-                bot.rpc.send_webxdc_status_update(accid, msgid, body, "")
-                pushed += 1
-            except Exception as ex:
-                bot.logger.warning(
-                    f"ack push to chat {chatid} msgid {msgid} failed: {ex}"
-                )
-    return pushed
+    return _broadcast(bot, accid, {"ack": cmd})
 
 
 def _send_apps(
@@ -454,13 +385,7 @@ def run_lock_command(
     """
     global _last_known_state, _last_state_ts, _last_battery_low
 
-    # Defence-in-depth: also check here, even though every caller already
-    # checks the whitelist.
-    if command not in VALID_COMMANDS:
-        bot.logger.warning(f"refusing unknown command {command!r}")
-        if source_msgid is not None:
-            bot.rpc.send_reaction(accid, source_msgid, ["❌"])
-        return
+    assert command in VALID_COMMANDS, f"unknown command {command!r}"
 
     if source_msgid is not None:
         bot.rpc.send_reaction(accid, source_msgid, ["⌛"])
@@ -472,7 +397,7 @@ def run_lock_command(
         stderr=subprocess.PIPE,
     )
 
-    log.debug(
+    bot.logger.debug(
         f"send-command.sh {command} rc={proc.returncode}\n"
         f"---stdout---\n{proc.stdout.strip()}\n"
         f"---stderr---\n{proc.stderr.strip()}"
@@ -489,6 +414,7 @@ def run_lock_command(
             if line.strip():
                 bot.rpc.send_msg(accid, chatid, MsgData(text=line))
 
+    parsed_state, parsed_battery = parse_lock_output(proc.stdout)
     if proc.returncode != 0:
         new_state = "error"
         bot.logger.warning(
@@ -496,22 +422,20 @@ def run_lock_command(
             f"raw stdout:\n{proc.stdout.strip()}\n"
             f"---stderr---\n{proc.stderr.strip()}"
         )
+    elif parsed_state is None:
+        bot.logger.warning(
+            f"send-command.sh {command} rc=0 but state parse returned "
+            f"None; raw stdout:\n{proc.stdout.strip()}\n"
+            f"---stderr---\n{proc.stderr.strip()}"
+        )
+        new_state = "unknown"
     else:
-        parsed = parse_state_from_output(proc.stdout)
-        if parsed is None:
-            bot.logger.warning(
-                f"send-command.sh {command} rc=0 but state parse returned "
-                f"None; raw stdout:\n{proc.stdout.strip()}\n"
-                f"---stderr---\n{proc.stderr.strip()}"
+        if parsed_state == "unknown":
+            bot.logger.debug(
+                f"send-command.sh {command} -> lock reported "
+                f"UNKNOWN/MOVING; raw stdout:\n{proc.stdout.strip()}"
             )
-            new_state = "unknown"
-        else:
-            if parsed == "unknown":
-                log.debug(
-                    f"send-command.sh {command} -> lock reported "
-                    f"UNKNOWN/MOVING; raw stdout:\n{proc.stdout.strip()}"
-                )
-            new_state = parsed
+        new_state = parsed_state
 
     # Audit line for app-triggered commands. Skip 'status' because it is
     # read-only and noisy (the app auto-requests it on open) -- except
@@ -523,12 +447,11 @@ def run_lock_command(
         and prev_state not in (None, "unknown", "error")
     )
     if actor_name is not None and (command != "status" or manual_event):
-        state_override = _AUDIT_STATE.get(new_state)
-        if state_override is not None:
-            state_emoji, state_verb = state_override
-            audit = f"{state_emoji} {DOOR_NAME} - {state_verb}"
+        if new_state == "unknown":
+            emoji, verb = _AUDIT["unknown"]
+            audit = f"{emoji} {DOOR_NAME} - {verb}"
         elif proc.returncode == 0:
-            emoji, _verb = _AUDIT_VERB.get(command, ("🔧", command))
+            emoji, _ = _AUDIT.get(command, ("🔧", command))
             audit = f"{emoji} {DOOR_NAME} {actor_name}"
         else:
             audit = f"❌ {DOOR_NAME} {actor_name} ({command} failed)"
@@ -536,9 +459,8 @@ def run_lock_command(
 
     # Only status output carries battery_low; preserve the cached value
     # (from the last status probe) for lock/unlock/open.
-    battery_low = parse_battery_low_from_output(proc.stdout)
-    if battery_low is not None:
-        _last_battery_low = battery_low
+    if parsed_battery is not None:
+        _last_battery_low = parsed_battery
 
     _last_known_state = new_state
     _last_state_ts = int(time.time())
@@ -551,7 +473,7 @@ def run_lock_command(
     # Low-battery warning is chat-visible on both paths. Only emit it when
     # this call freshly observed the flag -- otherwise /lock would echo a
     # stale warning on every operation.
-    if battery_low:
+    if parsed_battery:
         bot.rpc.send_msg(
             accid, chatid,
             MsgData(text=f"🪫 {DOOR_NAME}: battery low — please replace batteries"),
@@ -576,7 +498,7 @@ def log_event(bot, accid, event):
     # Every Delta Chat core event at DEBUG -- useful when tracing an
     # issue end-to-end, but floods the journal at INFO. Run with
     # LOG_LEVEL=debug in .env when you need the full firehose.
-    log.debug("%s", event)
+    bot.logger.debug("%s", event)
 
 
 @cli.on(events.RawEvent)
@@ -691,6 +613,7 @@ def on_new_message(bot, accid, event):
 
     text_cmd_map = {
         "/unlock": "unlock", "/auf": "unlock",
+        "/open": "open", "/oeffnen": "open",
         "/lock": "lock", "/zu": "lock",
         "/status": "status",
     }
@@ -761,14 +684,14 @@ def _on_start(bot, _args):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        log.debug(
+        bot.logger.debug(
             f"startup status probe rc={proc.returncode}\n"
             f"---stdout---\n{proc.stdout.strip()}\n"
             f"---stderr---\n{proc.stderr.strip()}"
         )
         if proc.returncode == 0:
-            parsed = parse_state_from_output(proc.stdout)
-            if parsed is None:
+            parsed_state, parsed_battery = parse_lock_output(proc.stdout)
+            if parsed_state is None:
                 bot.logger.warning(
                     f"startup status probe rc=0 but state parse returned "
                     f"None; raw stdout:\n{proc.stdout.strip()}\n"
@@ -776,16 +699,15 @@ def _on_start(bot, _args):
                 )
                 _last_known_state = "unknown"
             else:
-                if parsed == "unknown":
-                    log.debug(
+                if parsed_state == "unknown":
+                    bot.logger.debug(
                         f"startup status probe -> lock reported "
                         f"UNKNOWN/MOVING; raw stdout:\n"
                         f"{proc.stdout.strip()}"
                     )
-                _last_known_state = parsed
-            battery_low = parse_battery_low_from_output(proc.stdout)
-            if battery_low is not None:
-                _last_battery_low = battery_low
+                _last_known_state = parsed_state
+            if parsed_battery is not None:
+                _last_battery_low = parsed_battery
         else:
             _last_known_state = "error"
             bot.logger.warning(
@@ -803,17 +725,12 @@ def _on_start(bot, _args):
         _last_known_state = "unknown"
         _last_state_ts = int(time.time())
 
-    # Push door_name + state to every known instance in an allowed chat
-    # (silent, info=""). _push_state already filters; do the same here.
+    # Push door_name + state to every known instance in an allowed chat.
     accounts = bot.rpc.get_all_account_ids()
     if not accounts:
         return
     accid = accounts[0]
-    for chatid, apps in list(_msgid_map.items()):
-        if not _is_allowed(chatid):
-            continue
-        for msgid in apps.values():
-            _push_door_name(bot, accid, msgid)
+    _broadcast(bot, accid, {"config": {"door_name": DOOR_NAME}})
     _push_state(bot, accid, _last_known_state)
 
 

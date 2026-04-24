@@ -12,7 +12,7 @@ app interactions into BLE lock operations via `send-command.sh` →
 
 ```
 DeltaChat user
-  ├── text commands (/lock, /unlock, /status, /apps, /id)
+  ├── text commands (/lock, /unlock, /open, /status, /apps, /id)
   └── webxdc app (gatekeeper; quick-lock is built-but-disabled)
         │
         ▼

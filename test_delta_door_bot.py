@@ -52,25 +52,33 @@ _bot = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_bot)
 
 
-class ParseStateFromOutput(unittest.TestCase):
+class ParseLockOutput(unittest.TestCase):
+    # (stdout, expected_state, expected_battery_low)
     CASES = [
         # Simple "device <state>" single-line results from lock/unlock/open.
-        ("device locked\n", "locked"),
-        ("device unlocked\n", "unlocked"),
-        ("device opened\n", "unlocked"),
-        ("  device  locked  \n", "locked"),  # whitespace tolerance
-        ("DEVICE LOCKED\n", "locked"),         # case-insensitive
+        # No battery field -> battery is None (caller preserves cache).
+        ("device locked\n", "locked", None),
+        ("device unlocked\n", "unlocked", None),
+        ("device opened\n", "unlocked", None),
+        ("  device  locked  \n", "locked", None),  # whitespace tolerance
+        ("DEVICE LOCKED\n", "locked", None),        # case-insensitive
 
         # Dict-repr lines from status queries. keyblepy emits something
         # like "device status = {'lock_status': 'LOCKED', ...}".
-        ("device status = {'lock_status': 'LOCKED', 'battery_low': False}\n", "locked"),
-        ('device status = {"lock_status": "UNLOCKED"}\n', "unlocked"),
-        ("{'lock_status': 'OPENED'}\n", "unlocked"),
+        ("device status = {'lock_status': 'LOCKED', 'battery_low': False}\n",
+         "locked", False),
+        ("device status = {'lock_status': 'LOCKED', 'battery_low': True}\n",
+         "locked", True),
+        ('device status = {"lock_status": "UNLOCKED"}\n', "unlocked", None),
+        ("{'lock_status': 'OPENED'}\n", "unlocked", None),
+        ('{"battery_low": true}\n', None, True),
+        ('{"battery_low": 1}\n', None, True),
+        ('{"battery_low": 0}\n', None, False),
 
         # UNKNOWN / MOVING are real lock states (manual operation or
         # motor-in-flight) -- must return "unknown", not None.
-        ("device status = {'lock_status': 'UNKNOWN'}\n", "unknown"),
-        ("device status = {'lock_status': 'MOVING'}\n", "unknown"),
+        ("device status = {'lock_status': 'UNKNOWN'}\n", "unknown", None),
+        ("device status = {'lock_status': 'MOVING'}\n", "unknown", None),
 
         # Multi-line output: parser must scan every line.
         (
@@ -78,59 +86,26 @@ class ParseStateFromOutput(unittest.TestCase):
             "bond established\n"
             "device status = {'lock_status': 'LOCKED', 'battery_low': False}\n"
             "disconnected\n",
-            "locked",
+            "locked", False,
         ),
 
         # Whitespace-only / empty.
-        ("\n\n   \n", None),
-        ("", None),
+        ("\n\n   \n", None, None),
+        ("", None, None),
 
         # Genuinely unparseable returns None so the caller escalates
         # to WARN with the raw bytes for future diagnosis.
-        ("some weird new output from keyblepy\n", None),
-        ("device is fine\n", None),
+        ("some weird new output from keyblepy\n", None, None),
+        ("device is fine\n", None, None),
     ]
 
     def test_cases(self):
-        for stdout, expected in self.CASES:
+        for stdout, expected_state, expected_battery in self.CASES:
             with self.subTest(stdout=stdout.strip()[:40]):
-                self.assertEqual(_bot.parse_state_from_output(stdout), expected)
-
-
-class ParseBatteryLowFromOutput(unittest.TestCase):
-    CASES = [
-        ("device status = {'lock_status': 'LOCKED', 'battery_low': False}\n", False),
-        ("device status = {'lock_status': 'LOCKED', 'battery_low': True}\n", True),
-        ('{"battery_low": true}\n', True),
-        ('{"battery_low": 1}\n', True),
-        ('{"battery_low": 0}\n', False),
-
-        # lock/unlock commands don't emit battery_low -- parser must
-        # return None so the caller preserves the last-known value.
-        ("device locked\n", None),
-        ("", None),
-    ]
-
-    def test_cases(self):
-        for stdout, expected in self.CASES:
-            with self.subTest(stdout=stdout.strip()[:40]):
-                self.assertEqual(_bot.parse_battery_low_from_output(stdout), expected)
-
-
-class ParseAllowedChats(unittest.TestCase):
-    CASES = [
-        ("1,2,3", {1, 2, 3}),
-        ("", set()),
-        (" 1 , 2 , 3 ", {1, 2, 3}),
-        ("1,,2", {1, 2}),
-        ("1,abc,3", {1, 3}),
-        ("42", {42}),
-    ]
-
-    def test_cases(self):
-        for raw, expected in self.CASES:
-            with self.subTest(raw=raw):
-                self.assertEqual(_bot._parse_allowed_chats(raw), expected)
+                self.assertEqual(
+                    _bot.parse_lock_output(stdout),
+                    (expected_state, expected_battery),
+                )
 
 
 class Sanitize(unittest.TestCase):

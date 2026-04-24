@@ -102,11 +102,13 @@ h1 {
   flex: none;
 }
 
-.status.locked {
+.status.locked,
+.status.error {
   background: #fdecea;
   color: #8b1f1f;
 }
-.status.locked .dot {
+.status.locked .dot,
+.status.error .dot {
   background: #c0392b;
 }
 
@@ -118,21 +120,8 @@ h1 {
   background: #2e9e3a;
 }
 
-.status.unknown {
-  background: #eef0f1;
-  color: #555;
-}
-.status.unknown .dot {
-  background: #999;
-}
-
-.status.error {
-  background: #fdecea;
-  color: #8b1f1f;
-}
-.status.error .dot {
-  background: #c0392b;
-}
+/* .status.unknown intentionally has no rules -- the default .status
+   styling above already renders the "no state known" look. */
 
 .lastUpdate {
   margin: 0.25rem 0 0;
