@@ -106,6 +106,13 @@ _AUDIT = {
 MAX_AGE_SECONDS = 200
 MAX_APP_AGE_SECONDS = 45
 
+# Tolerance for sender clocks that run slightly ahead of ours. Replay
+# protection still rejects messages from the meaningful future, but a
+# few seconds of normal cross-device clock drift no longer kills
+# commands. (Observed 2026-04-26: an age=-1s /status was rejected
+# right after a Pi reboot before NTP fully settled.)
+MAX_CLOCK_SKEW_SECONDS = 30
+
 # Strip control chars / newlines from values that arrive over the wire
 # and might end up in log lines or chat messages.
 _CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")
@@ -559,9 +566,9 @@ def on_webxdc_update(bot, accid, event):
         return
 
     # Replay protection: drop stale button presses that arrive after
-    # the bot reconnects from an offline period. A negative age means
-    # the sender's clock is ahead of ours -- treat that as untrusted
-    # (future-dated) and drop too. Apps built before `ts` was added
+    # the bot reconnects from an offline period. Ages more negative
+    # than -MAX_CLOCK_SKEW_SECONDS are treated as untrusted future-
+    # dated taps and also dropped. Apps built before `ts` was added
     # are no longer supported; users must /apps to pick up a current
     # build.
     ts = req.get("ts")
@@ -572,7 +579,7 @@ def on_webxdc_update(bot, accid, event):
         )
         return
     age = int(time.time()) - int(ts)
-    if age > MAX_APP_AGE_SECONDS or age < 0:
+    if age > MAX_APP_AGE_SECONDS or age < -MAX_CLOCK_SKEW_SECONDS:
         bot.logger.info(
             f"app cmd {cmd!r} from chat {chatid} ({name} via {app_id}) "
             f"age={age}s (limit {MAX_APP_AGE_SECONDS}s) -> ignored"
@@ -623,7 +630,7 @@ def on_new_message(bot, accid, event):
             bot.rpc.send_msg(accid, chatid, MsgData(text="permission denied"))
             return
         age = int(time.time()) - msg.timestamp
-        if age > MAX_AGE_SECONDS or age < 0:
+        if age > MAX_AGE_SECONDS or age < -MAX_CLOCK_SKEW_SECONDS:
             bot.logger.info(
                 f"text command {text!r} in msg {msg.id} chat {chatid} "
                 f"age={age}s (limit {MAX_AGE_SECONDS}s) -> ignored"
