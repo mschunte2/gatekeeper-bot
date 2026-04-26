@@ -295,6 +295,26 @@ built-in via pair-lock.sh if you want the fast path on it too.
   limitation. Production still uses the USB adapter for its
   stronger antenna and faster (paired) path; the built-in is a
   viable fallback.
+- **WiFi-stack-only hang (unmitigated, on watch).** On 2026-04-26
+  the Pi went silent for ~11h after a `wpa_supplicant: WPA: Group
+  rekeying completed` line at 04:30 BST, requiring a manual power-
+  cycle. Likely cause: `brcmfmac` firmware wedge during WPA rekey
+  -- a known Pi Zero 2 W issue. Mitigations applied that day:
+  systemd hardware watchdog enabled (`RuntimeWatchdogSec=15` in
+  `/etc/systemd/system.conf.d/watchdog.conf`); nightly 22:00
+  `/usr/sbin/reboot` band-aid removed from root cron; `atop` +
+  `atopacct` disabled (escalating `perf: interrupt took too long`
+  warnings suggested they were stressing the box). The watchdog
+  catches kernel-scheduler hangs (which the Apr 26 freeze was --
+  no journal entries during the 11h dead period); it does NOT
+  catch the variant where only `brcmfmac` dies but PID 1 keeps
+  running. Decision deferred until that softer mode actually
+  occurs: re-check `journalctl -b -1` after any future SSH outage
+  -- if the journal kept writing while the network was dead, the
+  WiFi-only-died variant is real and warrants its own mitigation
+  (e.g. periodic gateway-ping + `nmcli`/`wlan0` reconnect timer).
+  If it never recurs through ~2026-Q3, the watchdog alone is
+  enough.
 
 ## Resolved: lock returning `state=unknown` = manual operation
 
