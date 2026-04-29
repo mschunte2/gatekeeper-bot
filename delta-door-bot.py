@@ -92,11 +92,14 @@ _AUDIT = {
 # MAX_AGE_SECONDS (text) is sized to exceed the worst realistic BLE
 # stall. If send-command.sh hits its retry path (first attempt timeout
 # + second attempt under SEC_LEVEL=low), a single status/lock call can
-# block the event loop for ~3 minutes. A typed /status arriving during
-# that stall would previously age past a 60 s window and be silently
-# dropped (observed 2026-04-22). 200 s keeps the guard meaningful
-# against genuinely stale replays while absorbing a single retry
-# cascade.
+# block the event loop for roughly TIMEOUT*2 + cleanup overhead --
+# ~70-80 s with the current TIMEOUT=25 (was ~3 min when TIMEOUT=90,
+# tightened 2026-04-29 after a perfectly reachable lock spent 180 s
+# in retry purgatory). A typed /status arriving during that stall
+# would previously age past a 60 s window and be silently dropped
+# (observed 2026-04-22). 200 s keeps the guard meaningful against
+# genuinely stale replays while absorbing a single retry cascade
+# even if the per-attempt timeout is loosened again later.
 #
 # MAX_APP_AGE_SECONDS (webxdc) stays tight: webxdc button taps are
 # rarely typed during a stall (the app shows its own pending state),
@@ -284,6 +287,10 @@ def _push_ack(bot, accid: int, cmd: str) -> int:
     return _broadcast(bot, accid, {"ack": cmd})
 
 
+def _push_progress(bot, accid: int, progress: str) -> int:
+    return _broadcast(bot, accid, {"progress": progress})
+
+
 def _send_apps(
     bot, accid: int, chatid: int
 ) -> tuple[list[str], list[str]]:
@@ -397,50 +404,68 @@ def run_lock_command(
     if source_msgid is not None:
         bot.rpc.send_reaction(accid, source_msgid, ["⌛"])
 
-    proc = subprocess.run(
+    # Stream the subprocess so we can react to the RETRYING_LOW_SEC
+    # marker mid-flight: send-command.sh emits it on stdout right
+    # before the second (low-sec) attempt, after the first has timed
+    # out. We push a `progress=retrying` event to apps so the UI
+    # stops looking frozen during the fallback attempt instead of
+    # going silent until both attempts have finished.
+    #
+    # stderr=STDOUT merges streams so a single readline loop sees
+    # both in write order; a separate stderr drain isn't needed and
+    # we preserve true ordering for the chat echo.
+    proc = subprocess.Popen(
         [SEND_COMMAND_SH, command],
         encoding="utf-8",
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=1,
     )
+    output_lines: list[str] = []
+    progress_pushed = False
+    assert proc.stdout is not None
+    for raw in proc.stdout:
+        line = raw.rstrip("\n")
+        if line == ">>> RETRYING_LOW_SEC":
+            if not progress_pushed:
+                _push_progress(bot, accid, "retrying")
+                progress_pushed = True
+            continue  # drop marker from chat echo and parse buffers
+        output_lines.append(line)
+    proc.wait()
+    combined = "\n".join(output_lines)
 
     bot.logger.debug(
         f"send-command.sh {command} rc={proc.returncode}\n"
-        f"---stdout---\n{proc.stdout.strip()}\n"
-        f"---stderr---\n{proc.stderr.strip()}"
+        f"---output---\n{combined.strip()}"
     )
 
     # Text path: echo raw subprocess output (existing behaviour).
     # App path: stay silent here -- the audit line below speaks for the
     # app, and the raw 'device opened' line would just duplicate it.
     if actor_name is None:
-        for line in proc.stdout.splitlines():
-            if line.strip():
-                bot.rpc.send_msg(accid, chatid, MsgData(text=line))
-        for line in proc.stderr.splitlines():
+        for line in output_lines:
             if line.strip():
                 bot.rpc.send_msg(accid, chatid, MsgData(text=line))
 
-    parsed_state, parsed_battery = parse_lock_output(proc.stdout)
+    parsed_state, parsed_battery = parse_lock_output(combined)
     if proc.returncode != 0:
         new_state = "error"
         bot.logger.warning(
             f"send-command.sh {command} rc={proc.returncode}; "
-            f"raw stdout:\n{proc.stdout.strip()}\n"
-            f"---stderr---\n{proc.stderr.strip()}"
+            f"raw output:\n{combined.strip()}"
         )
     elif parsed_state is None:
         bot.logger.warning(
             f"send-command.sh {command} rc=0 but state parse returned "
-            f"None; raw stdout:\n{proc.stdout.strip()}\n"
-            f"---stderr---\n{proc.stderr.strip()}"
+            f"None; raw output:\n{combined.strip()}"
         )
         new_state = "unknown"
     else:
         if parsed_state == "unknown":
             bot.logger.debug(
                 f"send-command.sh {command} -> lock reported "
-                f"UNKNOWN/MOVING; raw stdout:\n{proc.stdout.strip()}"
+                f"UNKNOWN/MOVING; raw output:\n{combined.strip()}"
             )
         new_state = parsed_state
 

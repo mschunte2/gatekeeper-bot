@@ -26,20 +26,18 @@ const PENDING_VERB = {
   status: "checking",
 };
 
-// Staged pending-state messages. The bot's event loop blocks on a
-// single subprocess.run call, so a BLE retry cascade can hold the lock
-// up to ~3 minutes before a response arrives. Rather than sit in the
-// initial "locking…" state for that long (making the app look frozen),
-// swap the status text once the typical single-attempt window is past.
-// We have no ground-truth signal for "bot is retrying" — these timers
-// are purely local bets based on elapsed time, so the copy is kept
-// soft ("may take a while") to stay accurate whether the operation is
-// merely slow or actually in the retry path.
+// Staged pending-state messages. With per-attempt TIMEOUT=25 s on the
+// bot side, a full retry cascade (configured SEC_LEVEL + low-sec
+// fallback) caps near 60 s wall, so the local timers are tightened
+// to match. The bot ALSO sends a `progress=retrying` push the moment
+// send-command.sh enters the second attempt, which beats this timer
+// to the punch in the common case -- the timer is the fallback for
+// instances that miss the push (offline, app closed mid-flight).
 const PENDING_STAGES = [
-  { at: 25000, text: "still working… may take a while" },
-  { at: 90000, text: "retrying — up to ~3 min total, please be patient" },
+  { at: 20000, text: "still working…" },
+  { at: 35000, text: "retrying after timeout, please be patient" },
 ];
-const PENDING_TIMEOUT_MS = 210000;
+const PENDING_TIMEOUT_MS = 75000;
 
 const doorBtn = document.getElementById("doorBtn");
 const doorIcon = document.getElementById("doorIcon");
@@ -135,6 +133,12 @@ window.webxdc.setUpdateListener((update) => {
   const payload = update.payload || {};
   if (payload.config && typeof payload.config.door_name === "string") {
     setDoorName(payload.config.door_name);
+  }
+  if (payload.progress === "retrying" && _pendingTimers.length) {
+    // Bot signalled that its first BLE attempt timed out and the
+    // low-sec fallback is running. Update the status copy without
+    // touching the door state (still pending, no ground truth yet).
+    statusText.textContent = "Door: retrying after timeout…";
   }
   const resp = payload.response;
   if (resp) {

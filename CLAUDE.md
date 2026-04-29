@@ -54,11 +54,26 @@ harmless. Falls back to the built-in UART adapter if unset. We removed
 `send-command.sh` handles all BLE robustness: kill stale
 `bluepy-helper`, reset adapter, attempt with configured `SEC_LEVEL`,
 retry with `SEC_LEVEL=low` if the first attempt fails (bond may be
-evicted). The bot was simplified to a single `subprocess.run` call.
-Rationale: keeps the retry logic close to the BLE layer; works
-identically whether triggered by the bot or run manually from the
-shell; supports the two-bot-one-adapter scenario without the bots
-knowing about each other.
+evicted). Rationale: keeps the retry logic close to the BLE layer;
+works identically whether triggered by the bot or run manually from
+the shell; supports the two-bot-one-adapter scenario without the
+bots knowing about each other.
+
+Per-attempt budget is `TIMEOUT=25` (was 90 until 2026-04-29);
+successful operations finish in <17 s at p90, so 25 s leaves
+comfortable headroom while capping a wedged attempt before the
+fallback kicks in. Worst-case wall on a double-failure is ~50-60 s
+instead of the historical ~180 s.
+
+The bot streams send-command.sh's output line-by-line (Popen, not
+subprocess.run) and reacts to a `>>> RETRYING_LOW_SEC` marker the
+script prints right before its second attempt: it pushes
+`{progress: "retrying"}` to all webxdc app instances so the UI can
+show "retrying after timeout" instead of sitting silently in the
+initial "locking…" state until both attempts finish. The marker is
+filtered out of chat echo. Apps treat the progress push as
+advisory -- it does not change door state, only the pending status
+copy.
 
 ### flock serialization
 All three BLE shell scripts (`send-command.sh`, `pair-lock.sh`,
@@ -199,6 +214,17 @@ dropped with a log line pointing the user at `/apps` to register.
 ```
 Pushed immediately when a command is accepted, before the BLE
 round-trip.
+
+### Bot → app (progress)
+```json
+{"payload": {"progress": "retrying"}}
+```
+Pushed when send-command.sh's first BLE attempt has timed out and
+the low-sec fallback is starting (triggered by the `>>>
+RETRYING_LOW_SEC` marker on stdout). Advisory only -- apps update
+their pending status copy and do NOT touch door state. Currently
+the only defined value is `"retrying"`. Older app instances that
+don't know about this key simply ignore it.
 
 ## File layout
 

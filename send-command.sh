@@ -55,7 +55,15 @@ if run_keyble "${SEC_LEVEL:-medium}"; then
 fi
 
 # --- attempt 2: SEC_LEVEL=low (unbonded fallback) --------------------------
+#
+# The RETRYING_LOW_SEC marker on stdout is a structured signal for
+# the bot's streaming subprocess reader: when it sees this line it
+# pushes a `progress=retrying` event to webxdc apps so the UI stops
+# looking frozen during the second attempt. Filtered out before chat
+# echo. Order: marker before the human-readable warning so the bot
+# fires the progress push before any further blocking work.
 
+echo ">>> RETRYING_LOW_SEC"
 echo "⚠ Bond may be lost — retrying without pairing (slow). Run pair-lock.sh to re-establish." >&2
 cleanup_ble
 if run_keyble low; then
