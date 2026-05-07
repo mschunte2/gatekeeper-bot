@@ -696,8 +696,8 @@ def on_new_message(bot, accid, event):
         return
 
     if text == "/help":
-        if not _is_allowed(chatid):
-            return
+        # /help bypasses the allow-list -- it's generic command surface,
+        # symmetric with /id, and harmless to expose.
         help_text = os.environ.get("HELP_MESSAGE", DEFAULT_HELP_MESSAGE)
         bot.rpc.send_msg(accid, chatid, MsgData(text=help_text))
         return
