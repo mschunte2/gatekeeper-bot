@@ -49,7 +49,7 @@ DEFAULT_HELP_MESSAGE = (
     " /status - print current status\n"
     " /apps - (re)deliver webxdc control apps; replaces prior copies so late-joining chat members get a fresh install\n"
     " /id - get this chat's id\n"
-    " - Any other input shows this message.\n"
+    " /help - show this message\n"
     " NOTE: lock operations can take up to 90 seconds."
 )
 
@@ -628,6 +628,17 @@ def on_webxdc_update(bot, accid, event):
 def on_new_message(bot, accid, event):
     msg = event.msg
     chatid = msg.chat_id
+
+    # Auto-post help when a new member is added to the group. Gated by
+    # the allow-list -- we don't dump the command surface to chats that
+    # aren't authorised to operate the lock anyway.
+    if getattr(msg, "is_info", False) and \
+            getattr(msg, "system_message_type", "") == "MemberAddedToGroup":
+        if _is_allowed(chatid):
+            help_text = os.environ.get("HELP_MESSAGE", DEFAULT_HELP_MESSAGE)
+            bot.rpc.send_msg(accid, chatid, MsgData(text=help_text))
+        return
+
     text = (msg.text or "").strip()
 
     # /id is intentionally permission-free -- needed for setup discovery.
@@ -684,8 +695,19 @@ def on_new_message(bot, accid, event):
         bot.rpc.send_msg(accid, chatid, MsgData(text=". ".join(fragments) + "."))
         return
 
-    help_text = os.environ.get("HELP_MESSAGE", DEFAULT_HELP_MESSAGE)
-    bot.rpc.send_msg(accid, chatid, MsgData(text=help_text))
+    if text == "/help":
+        if not _is_allowed(chatid):
+            return
+        help_text = os.environ.get("HELP_MESSAGE", DEFAULT_HELP_MESSAGE)
+        bot.rpc.send_msg(accid, chatid, MsgData(text=help_text))
+        return
+
+    # Unknown commands and free-form chatter no longer trigger help auto-
+    # matically -- it was noisy in shared rooms. /help on demand still
+    # works; new members get help on the join system message.
+    if text.startswith("/") and _is_allowed(chatid):
+        bot.rpc.send_msg(accid, chatid,
+                         MsgData(text=f"unknown command: {text}. Try /help."))
 
 
 # ---------------------------------------------------------------- startup
