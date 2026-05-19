@@ -158,20 +158,31 @@ release_ble_lock() {
 
 # --- per-lock post-op cooldown --------------------------------------------
 #
-# The Eqiva lock enters a ~30-60 s "blackout" window after every
-# successful BLE op: the auto-relock motor fires around T+30 s and the
-# lock cannot complete a fresh connect/encrypt handshake until ~T+60 s.
-# Empirically (9/9 in-window attempts failed; 0% failures outside)
-# both the paired and low-sec retry attempts time out, producing the
-# user-visible "Bond may be lost" warning despite the bond being fine.
+# Two empirically-observed blackout bands after a successful BLE op:
 #
-# cooldown_check sleeps just enough to push the next attempt past the
-# blackout. The cooldown is per-LOCK_MAC (auto-relock is per-lock, not
-# per-adapter) and command-agnostic (any successful op refreshes the
-# state file; any subsequent op respects it). Set COOLDOWN_AFTER_SECONDS=0
-# in .env to disable for that bot.
+#   1. Rapid-retap (~0-1 s post-success): 5/5 observed retaps within
+#      1 s of the prior success failed (rc=2 on both paired and low-sec
+#      attempts). Likely cause: the lock's BLE radio has not fully
+#      released the prior connection state when a new connect arrives.
+#      Floor: _COOLDOWN_RAPID = 5 s.
+#
+#   2. Post-op blackout (~30-60 s post-success): the Eqiva auto-relock
+#      motor fires around T+30 s and the lock cannot complete a fresh
+#      encrypt handshake within send-command.sh's 25 s x 2 budget until
+#      ~T+60 s. 9/9 in-window attempts failed historically.
+#      Floor: _COOLDOWN_LOW = 30 s, ceiling: COOLDOWN_AFTER_SECONDS = 60 s.
+#
+# In both bands the chat-visible "Bond may be lost" warning surfaces
+# despite the bond being intact. cooldown_check sleeps just enough to
+# push the next attempt past whichever band applies. Sweet spot is
+# 5 s <= elapsed < 30 s (and >= 60 s): proceeds immediately.
+#
+# Per-LOCK_MAC state and command-agnostic (any successful op refreshes
+# the state file; any subsequent op respects it). Set
+# COOLDOWN_AFTER_SECONDS=0 in .env to disable the gate entirely.
 
 : "${COOLDOWN_AFTER_SECONDS:=60}"
+_COOLDOWN_RAPID=5
 _COOLDOWN_LOW=30
 
 cooldown_path() {
@@ -188,8 +199,13 @@ cooldown_check() {
     [ -n "$last" ] || return 0
     now=$(date +%s)
     elapsed=$(( now - last ))
-    if [ "$elapsed" -ge "$_COOLDOWN_LOW" ] \
-       && [ "$elapsed" -lt "$COOLDOWN_AFTER_SECONDS" ]; then
+    if [ "$elapsed" -lt "$_COOLDOWN_RAPID" ]; then
+        wait=$(( _COOLDOWN_RAPID - elapsed ))
+        echo ">>> COOLDOWN_WAIT secs=$wait"
+        echo "⏳ Lock just finished an op (${elapsed}s ago); waiting ${wait}s before next." >&2
+        sleep "$wait"
+    elif [ "$elapsed" -ge "$_COOLDOWN_LOW" ] \
+         && [ "$elapsed" -lt "$COOLDOWN_AFTER_SECONDS" ]; then
         wait=$(( COOLDOWN_AFTER_SECONDS - elapsed ))
         echo ">>> COOLDOWN_WAIT secs=$wait"
         echo "⏳ Lock is in post-op cooldown (${elapsed}s since last op); waiting ${wait}s." >&2

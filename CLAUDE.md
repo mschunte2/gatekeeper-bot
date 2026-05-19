@@ -75,36 +75,50 @@ filtered out of chat echo. Apps treat the progress push as
 advisory -- it does not change door state, only the pending status
 copy.
 
-### Failure mode: 30-60 s post-op blackout window
+### Failure mode: two BLE blackout bands after a successful op
 
-Investigation 2026-05-19 (journal Apr 30 - May 19, ~190 ops):
-**every single BLE failure landed in the same band -- between 30
-and 60 s after a previous successful op on the same lock**. 9 of
-9 in-window attempts failed; outside that band success was 100 %
-(<=30 s: 10/10; 60-120 s: 5/5) or near-100 % (>10 min cold:
-39/40). The pattern held across `open`, `lock`, and `status`,
-across both hoftor and km. Probe samples within +-30 min of each
-failure were all clean -- the adapter and link margin were fine.
+Investigation 2026-05-19 (3-week journal + on-site stress test)
+identified **two distinct post-op blackout bands** on the Eqiva
+lock. Both produce the same user-visible "Bond may be lost"
+warning despite the bond being intact, and both defeat
+send-command.sh's 25 s x 2 retry budget:
 
-Mechanism: the Eqiva lock's auto-relock motor fires ~30 s post-op
-and leaves the lock unable to complete a fresh connect/encrypt
-handshake inside send-command.sh's 25 s x 2 budget. Both the
-paired and low-sec retry attempts time out, producing the
-user-visible "Bond may be lost" warning despite the bond being
-intact.
+**Band 1 -- rapid retap, 0-5 s post-success.** Observed during
+deliberate stress test 2026-05-19: 5/5 second taps that arrived
+within ~1 s of the prior successful op timed out (rc=2). Likely
+cause: the lock's BLE radio hasn't fully released the prior
+connection state when the new connect attempt arrives. Mid-band
+taps (~8-10 s gap, observed in the same test) work fine, so the
+floor is short.
+
+**Band 2 -- post-op blackout, 30-60 s post-success.** Historical
+journal data: 9/9 in-window attempts failed; outside the band
+success was 100 % (<=30 s: 10/10; 60-120 s: 5/5) or near-100 %
+(>10 min cold: 39/40). The pattern spans `open`, `lock`, and
+`status` and both hoftor and km. Probe samples within +-30 min
+of each failure were all clean -- the adapter and link margin
+are fine; this is the Eqiva auto-relock motor firing ~30 s
+post-op and leaving the lock unable to complete a fresh
+encrypt handshake until ~T+60 s.
 
 Mitigation: per-LOCK_MAC cooldown gate in send-command.sh
 (helpers in `lib/common.sh`: `cooldown_path`, `cooldown_check`,
 `cooldown_mark_success`). Successful ops write a Unix-seconds
 timestamp to `/tmp/gatekeeper-ble/lock-${LOCK_MAC}.lastop`
 (atomic write via tmp+mv, mode 0666); the next invocation
-checks `elapsed = now - last`. If `30 <= elapsed < 60`, the
-script emits `>>> COOLDOWN_WAIT secs=N` and sleeps
-`N = 60 - elapsed`. Otherwise it proceeds immediately. The
+checks `elapsed = now - last` and:
+
+  - `elapsed < 5 s` -> sleep `5 - elapsed` (rapid-retap floor)
+  - `5 <= elapsed < 30 s` -> proceed immediately (sweet spot)
+  - `30 <= elapsed < 60 s` -> sleep `60 - elapsed` (post-op blackout)
+  - `elapsed >= 60 s` -> proceed immediately
+
+`>>> COOLDOWN_WAIT secs=N` is emitted before each sleep. The
 cooldown is command-agnostic (covers the "tapped /lock by
 mistake, then tapped /open" case empirically observed in 2 of
-the 6 hoftor failures). Tunable via `COOLDOWN_AFTER_SECONDS` in
-`.env`; 0 disables.
+the original 6 hoftor failures). Tunable via
+`COOLDOWN_AFTER_SECONDS` in `.env`; 0 disables the gate
+entirely (both bands).
 
 The bot recognises `>>> COOLDOWN_WAIT secs=N`, filters it from
 chat echo, and reuses the existing `{progress: "retrying"}`
