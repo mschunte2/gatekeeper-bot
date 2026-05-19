@@ -19,6 +19,15 @@
 #   - Automatic retry: if the first attempt fails (e.g. bond
 #     evicted), retry once with SEC_LEVEL=low (unbonded fallback,
 #     ~45s).
+#   - Post-op cooldown: the Eqiva lock has a ~30-60 s "blackout"
+#     window after every successful op (auto-relock cycle). A
+#     fresh attempt inside that window times out deterministically
+#     on both the paired and low-sec retries. cooldown_check sleeps
+#     just past the window when needed, emitting a structured
+#     ">>> COOLDOWN_WAIT secs=N" marker that the bot recognises and
+#     filters from chat echo (same protocol as RETRYING_LOW_SEC).
+#     Per-LOCK_MAC, command-agnostic. Tunable via
+#     COOLDOWN_AFTER_SECONDS in .env; 0 disables.
 #
 # Exit codes:
 #   0  success
@@ -34,6 +43,7 @@ load_env
 activate_venv
 resolve_adapter
 acquire_ble_lock
+cooldown_check
 
 COMMAND="$1"
 HARD_TIMEOUT=$(( ${TIMEOUT:-90} + 10 ))
@@ -51,6 +61,7 @@ run_keyble() {
 
 cleanup_ble
 if run_keyble "${SEC_LEVEL:-medium}"; then
+    cooldown_mark_success
     exit 0
 fi
 
@@ -67,6 +78,7 @@ echo ">>> RETRYING_LOW_SEC"
 echo "⚠ Bond may be lost — retrying without pairing (slow). Run pair-lock.sh to re-establish." >&2
 cleanup_ble
 if run_keyble low; then
+    cooldown_mark_success
     exit 0
 fi
 

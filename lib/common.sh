@@ -156,6 +156,57 @@ release_ble_lock() {
     exec 9>&-
 }
 
+# --- per-lock post-op cooldown --------------------------------------------
+#
+# The Eqiva lock enters a ~30-60 s "blackout" window after every
+# successful BLE op: the auto-relock motor fires around T+30 s and the
+# lock cannot complete a fresh connect/encrypt handshake until ~T+60 s.
+# Empirically (9/9 in-window attempts failed; 0% failures outside)
+# both the paired and low-sec retry attempts time out, producing the
+# user-visible "Bond may be lost" warning despite the bond being fine.
+#
+# cooldown_check sleeps just enough to push the next attempt past the
+# blackout. The cooldown is per-LOCK_MAC (auto-relock is per-lock, not
+# per-adapter) and command-agnostic (any successful op refreshes the
+# state file; any subsequent op respects it). Set COOLDOWN_AFTER_SECONDS=0
+# in .env to disable for that bot.
+
+: "${COOLDOWN_AFTER_SECONDS:=60}"
+_COOLDOWN_LOW=30
+
+cooldown_path() {
+    echo "$BLE_LOCK_DIR/lock-${LOCK_MAC}.lastop"
+}
+
+cooldown_check() {
+    [ "${COOLDOWN_AFTER_SECONDS:-60}" -gt 0 ] || return 0
+    local f
+    f=$(cooldown_path)
+    [ -r "$f" ] || return 0
+    local last now elapsed wait
+    last=$(cat "$f" 2>/dev/null) || return 0
+    [ -n "$last" ] || return 0
+    now=$(date +%s)
+    elapsed=$(( now - last ))
+    if [ "$elapsed" -ge "$_COOLDOWN_LOW" ] \
+       && [ "$elapsed" -lt "$COOLDOWN_AFTER_SECONDS" ]; then
+        wait=$(( COOLDOWN_AFTER_SECONDS - elapsed ))
+        echo ">>> COOLDOWN_WAIT secs=$wait"
+        echo "⏳ Lock is in post-op cooldown (${elapsed}s since last op); waiting ${wait}s." >&2
+        sleep "$wait"
+    fi
+}
+
+cooldown_mark_success() {
+    [ "${COOLDOWN_AFTER_SECONDS:-60}" -gt 0 ] || return 0
+    local f tmp
+    f=$(cooldown_path)
+    tmp="${f}.tmp.$$"
+    (umask 0; date +%s > "$tmp") || return 0
+    mv "$tmp" "$f" 2>/dev/null || rm -f "$tmp"
+    chmod 0666 "$f" 2>/dev/null || true
+}
+
 # --- BLE state cleanup -----------------------------------------------------
 #
 # Runs between attempts to un-wedge the adapter. Needs root (kills

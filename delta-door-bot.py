@@ -404,12 +404,16 @@ def run_lock_command(
     if source_msgid is not None:
         bot.rpc.send_reaction(accid, source_msgid, ["⌛"])
 
-    # Stream the subprocess so we can react to the RETRYING_LOW_SEC
-    # marker mid-flight: send-command.sh emits it on stdout right
-    # before the second (low-sec) attempt, after the first has timed
-    # out. We push a `progress=retrying` event to apps so the UI
-    # stops looking frozen during the fallback attempt instead of
-    # going silent until both attempts have finished.
+    # Stream the subprocess so we can react to structured markers
+    # mid-flight:
+    #   - RETRYING_LOW_SEC: emitted before the second (low-sec)
+    #     attempt after the first timed out; triggers a
+    #     progress=retrying push so the UI stops looking frozen.
+    #   - COOLDOWN_WAIT secs=N: emitted before the first attempt
+    #     when the lock is in its 30-60 s post-op blackout window
+    #     and the script is about to sleep N seconds. Reuses the
+    #     same progress=retrying value (apps already render it; no
+    #     app change needed for this addition).
     #
     # stderr=STDOUT merges streams so a single readline loop sees
     # both in write order; a separate stderr drain isn't needed and
@@ -427,6 +431,18 @@ def run_lock_command(
     for raw in proc.stdout:
         line = raw.rstrip("\n")
         if line == ">>> RETRYING_LOW_SEC":
+            if not progress_pushed:
+                _push_progress(bot, accid, "retrying")
+                progress_pushed = True
+            continue  # drop marker from chat echo and parse buffers
+        if line.startswith(">>> COOLDOWN_WAIT secs="):
+            # Post-op blackout cooldown: the script is about to sleep
+            # ~N seconds before issuing the first attempt. Reuse the
+            # existing "retrying" progress value so apps render their
+            # already-supported pending cue without any app change.
+            # The shared `progress_pushed` flag suppresses a later
+            # duplicate push if a real low-sec retry also fires.
+            bot.logger.info(f"send-command.sh {line}")
             if not progress_pushed:
                 _push_progress(bot, accid, "retrying")
                 progress_pushed = True

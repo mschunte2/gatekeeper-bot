@@ -75,6 +75,42 @@ filtered out of chat echo. Apps treat the progress push as
 advisory -- it does not change door state, only the pending status
 copy.
 
+### Failure mode: 30-60 s post-op blackout window
+
+Investigation 2026-05-19 (journal Apr 30 - May 19, ~190 ops):
+**every single BLE failure landed in the same band -- between 30
+and 60 s after a previous successful op on the same lock**. 9 of
+9 in-window attempts failed; outside that band success was 100 %
+(<=30 s: 10/10; 60-120 s: 5/5) or near-100 % (>10 min cold:
+39/40). The pattern held across `open`, `lock`, and `status`,
+across both hoftor and km. Probe samples within +-30 min of each
+failure were all clean -- the adapter and link margin were fine.
+
+Mechanism: the Eqiva lock's auto-relock motor fires ~30 s post-op
+and leaves the lock unable to complete a fresh connect/encrypt
+handshake inside send-command.sh's 25 s x 2 budget. Both the
+paired and low-sec retry attempts time out, producing the
+user-visible "Bond may be lost" warning despite the bond being
+intact.
+
+Mitigation: per-LOCK_MAC cooldown gate in send-command.sh
+(helpers in `lib/common.sh`: `cooldown_path`, `cooldown_check`,
+`cooldown_mark_success`). Successful ops write a Unix-seconds
+timestamp to `/tmp/gatekeeper-ble/lock-${LOCK_MAC}.lastop`
+(atomic write via tmp+mv, mode 0666); the next invocation
+checks `elapsed = now - last`. If `30 <= elapsed < 60`, the
+script emits `>>> COOLDOWN_WAIT secs=N` and sleeps
+`N = 60 - elapsed`. Otherwise it proceeds immediately. The
+cooldown is command-agnostic (covers the "tapped /lock by
+mistake, then tapped /open" case empirically observed in 2 of
+the 6 hoftor failures). Tunable via `COOLDOWN_AFTER_SECONDS` in
+`.env`; 0 disables.
+
+The bot recognises `>>> COOLDOWN_WAIT secs=N`, filters it from
+chat echo, and reuses the existing `{progress: "retrying"}`
+push so apps render their already-supported pending cue during
+the sleep without any app-side change.
+
 ### flock serialization
 All three BLE shell scripts (`send-command.sh`, `pair-lock.sh`,
 `register-user.sh`) acquire the same `flock -n` (non-blocking) on
